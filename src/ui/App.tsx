@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Text, useApp, useInput, useStdout, type Key } from 'ink'
+import { Box, Text, useApp, useBoxMetrics, useInput, useStdout, type DOMElement, type Key } from 'ink'
 import { GROUP_TAB, NEW_TAB, describeStatus, type Squad } from '../squad.js'
 import { Transcript } from './Transcript.js'
 import {
@@ -12,6 +12,7 @@ import {
 import { listTemplates, type Template } from '../library.js'
 import { draftToProfile, profileToDraft } from '../draft.js'
 import type { AgentProfile, AgentStatus } from '../types.js'
+import { hitTest, installMouse, isLeftClick, parseMouse, type Rect } from './mouse.js'
 
 const HELP = [
   '← →            switch tabs (Tab also works)',
@@ -51,6 +52,43 @@ function statusDot(status: AgentStatus): string {
   }
 }
 
+/**
+ * One tab, which reports its own measured position so a click can be mapped back to it.
+ * Measuring beats computing widths by hand: it stays correct as labels change, and it
+ * handles the tab bar wrapping onto a second row for free.
+ */
+function TabLabel({
+  label,
+  color,
+  active,
+  suffix,
+  onMeasure,
+}: {
+  label: string
+  color: string
+  active: boolean
+  suffix: string
+  onMeasure: (rect: Rect) => void
+}) {
+  const ref = useRef<DOMElement | null>(null)
+  const metrics = useBoxMetrics(ref)
+  useEffect(() => {
+    if (metrics.hasMeasured) {
+      onMeasure({ left: metrics.left, top: metrics.top, width: metrics.width, height: metrics.height })
+    }
+  }, [metrics.hasMeasured, metrics.left, metrics.top, metrics.width, metrics.height, onMeasure])
+
+  return (
+    <Box ref={ref} marginRight={1}>
+      <Text inverse={active} color={color} bold={active}>
+        {' '}
+        {label}
+        {suffix}{' '}
+      </Text>
+    </Box>
+  )
+}
+
 export function App({ squad }: { squad: Squad }) {
   const { exit } = useApp()
   const { stdout } = useStdout()
@@ -67,6 +105,8 @@ export function App({ squad }: { squad: Squad }) {
   // The half-written new agent is kept aside while editing an existing one, so opening
   // an editor never throws away a draft.
   const stashed = useRef<NewAgentState | undefined>(undefined)
+  const tabBarRef = useRef<DOMElement | null>(null)
+  const tabRects = useRef(new Map<string, Rect>())
   const [templates, setTemplates] = useState<Template[]>([])
   const capabilities = useMemo(() => squad.availableCapabilities(), [squad])
   const [, forceRender] = useState(0)
@@ -74,6 +114,12 @@ export function App({ squad }: { squad: Squad }) {
     squad.warnings.length ? squad.warnings.join(' ') : undefined,
   )
   const [exiting, setExiting] = useState(false)
+
+  useEffect(() => {
+    if (!stdout?.isTTY) return
+    // 1 is stdout: the restore must be written synchronously to the fd on exit.
+    return installMouse(data => stdout.write(data), 1)
+  }, [stdout])
 
   useEffect(() => {
     const onUpdate = () => forceRender(n => n + 1)
@@ -370,6 +416,24 @@ export function App({ squad }: { squad: Squad }) {
   useInput((input, key) => {
     if (exiting) return
 
+    // Mouse reports arrive as raw text. Every one is consumed here - including wheel and
+    // release events we ignore - so none of it can end up typed into the composer.
+    const mouse = parseMouse(input)
+    if (mouse) {
+      if (isLeftClick(mouse)) {
+        const barTop = tabBar.top
+        const barLeft = tabBar.left
+        for (const [id, rect] of tabRects.current) {
+          const absolute = { ...rect, top: barTop + rect.top, left: barLeft + rect.left }
+          if (hitTest(absolute, mouse.col, mouse.row)) {
+            setActiveId(id)
+            break
+          }
+        }
+      }
+      return
+    }
+
     if (key.ctrl && input === 'c') {
       void quit()
       return
@@ -442,6 +506,7 @@ export function App({ squad }: { squad: Squad }) {
     if (input) setDraft(prev => prev + input)
   })
 
+  const tabBar = useBoxMetrics(tabBarRef)
   const rows = stdout?.rows ?? 24
   const noticeLines = notice ? notice.split('\n').length + 2 : 0
   const paneHeight = Math.max(4, rows - 8 - noticeLines)
@@ -456,21 +521,22 @@ export function App({ squad }: { squad: Squad }) {
         <Text dimColor> {'─'} {title}</Text>
       </Box>
 
-      <Box flexDirection="row" flexWrap="wrap">
+      <Box flexDirection="row" flexWrap="wrap" ref={tabBarRef}>
         {tabs.map(tab => {
           const isActive = tab.id === current.id
           const status = tab.agent ? squad.statusOf(tab.agent.name) : undefined
           const unseen = squad.unseenCount(tab.id)
           const color = tab.agent ? colorOf(tab.agent.name) : tab.kind === 'new' ? 'gray' : 'white'
+          const suffix = `${status ? ` ${statusDot(status)}` : ''}${!isActive && unseen > 0 ? ` (${unseen})` : ''}`
           return (
-            <Box key={tab.id} marginRight={1}>
-              <Text inverse={isActive} color={color} bold={isActive}>
-                {' '}
-                {tab.label}
-                {status ? ` ${statusDot(status)}` : ''}
-                {!isActive && unseen > 0 ? ` (${unseen})` : ''}{' '}
-              </Text>
-            </Box>
+            <TabLabel
+              key={tab.id}
+              label={tab.label}
+              color={color}
+              active={isActive}
+              suffix={suffix}
+              onMeasure={rect => tabRects.current.set(tab.id, rect)}
+            />
           )
         })}
       </Box>

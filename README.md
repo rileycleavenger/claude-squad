@@ -66,12 +66,20 @@ key instead.
 | `←` `→` | switch tabs (`Tab` / `Shift+Tab` also work) |
 | `↑` `↓` | input history; moves the selection in the `+` tab |
 | `Enter` | send |
+| click a tab | switch to it |
 | `^E` | edit the current agent's configuration |
 | `^K` | interrupt the current tab's agent |
 | `^C` | shut the squad down |
 
 Typing in `#groupchat` addresses the whole team. Typing in an agent's tab is a private
 message to just that agent. Each tab keeps its own unsent draft.
+
+Tabs are clickable. claude-squad runs on the terminal's alternate screen so that click
+coordinates line up with what's drawn, which also means it restores your scrollback
+untouched when it exits. Two consequences worth knowing: the transcript leaves the screen
+on exit (it is saved, and comes back next launch), and while the app is running your
+terminal's own text selection needs **Shift** held down, since the app is receiving the
+mouse. Mouse reporting is turned off again on exit, including on `SIGTERM` and `SIGHUP`.
 
 | Command | |
 | --- | --- |
@@ -279,7 +287,7 @@ shows the running total, and lighter roles do fine on `claude-sonnet-5`.
 ## Development
 
 ```sh
-npm test              # routing, config, capabilities, secrets, persistence (no API calls)
+npm test              # routing, config, capabilities, secrets, mouse, persistence (no API calls)
 npm run smoke         # one real agent: proves session continuity and worktree writes
 npm run integration   # two real agents: groupchat, @mention handoff, worktree isolation
 npm run capabilities  # one real agent driving a real browser through the browser capability
