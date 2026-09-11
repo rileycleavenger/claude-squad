@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.squad/worktrees/
+.squad/history.jsonl
+.squad/state.json
+.squad/transcript.jsonl
