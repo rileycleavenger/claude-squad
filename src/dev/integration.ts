@@ -85,7 +85,7 @@ async function main() {
   console.log()
 
   squad.on('update', () => {})
-  squad.start()
+  await squad.start()
 
   squad.submit(GROUP_TAB, 'Team, begin. Follow your instructions exactly.')
 

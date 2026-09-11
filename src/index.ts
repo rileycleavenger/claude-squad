@@ -72,7 +72,7 @@ async function main(): Promise<void> {
   }
 
   const squad = await Squad.create(args.repo)
-  squad.start()
+  await squad.start()
 
   const instance = render(React.createElement(App, { squad }))
 

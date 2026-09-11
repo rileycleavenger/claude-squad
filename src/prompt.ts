@@ -20,6 +20,8 @@ export interface ProtocolContext {
   workdir: string
   /** Git branch backing `workdir`, when worktrees are in use. */
   branch?: string
+  /** Capabilities this agent is equipped with. */
+  capabilities?: Array<{ name: string; description: string }>
 }
 
 /**
@@ -27,7 +29,7 @@ export interface ProtocolContext {
  * followed by a generated protocol block describing the squad and how to talk to it.
  */
 export function buildRolePrompt(ctx: ProtocolContext): string {
-  const { me, roster, workdir, branch } = ctx
+  const { me, roster, workdir, branch, capabilities } = ctx
   const others = roster.filter(a => a.name !== me.name)
 
   const rosterLines = others.length
@@ -77,6 +79,24 @@ You have five tools for squad communication:
 - \`list_squad\` - see who is on the squad and whether they are currently busy or idle.
 - \`wait_for_messages\` - block until a message arrives (or the timeout elapses). Call this
   when you are waiting on a teammate instead of polling or inventing work.
+
+## Your capabilities
+
+${
+  capabilities && capabilities.length > 0
+    ? `You are equipped with the following, beyond the usual file, search and shell tools:
+
+${capabilities.map(c => `- **${c.name}** - ${c.description}`).join('\n')}
+
+Each one comes with a skill of the same name that describes how to use it well. Read that
+skill before using a capability for the first time in a task - it is short, and it covers
+the failure modes that make the difference between a tool call that looks like it worked
+and one that did. If a capability's tools are missing when you try to use them, say so in
+the groupchat rather than improvising a workaround.`
+    : `You have the usual file, search and shell tools, and no extra capabilities. If a task
+needs one (a browser, email, web research), say so in the groupchat - the operator can
+equip you from the + tab without restarting the squad.`
+}
 
 ## Rules of engagement
 

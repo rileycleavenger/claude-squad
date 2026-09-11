@@ -68,6 +68,7 @@ async function main() {
     model: MODEL,
     effort: 'low',
     instructions: 'You are a terse test agent. Answer in one short sentence. Do not use tools.',
+    capabilities: [],
     budgetUsd: 1,
   }
 

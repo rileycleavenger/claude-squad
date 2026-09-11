@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events'
+import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { AgentRunner } from './agent.js'
 import { MessageBus } from './bus.js'
@@ -7,6 +9,8 @@ import { loadConfig, writeProfile } from './config.js'
 import { saveToLibrary } from './library.js'
 import { loadState, saveState, TranscriptLog, type SquadState } from './state.js'
 import { ensureWorktree, provisionWorkspaces, type Workspace } from './worktree.js'
+import { loadCapabilities, materializeServers, skillNameFor, type Capability } from './capability.js'
+import { writeCapabilityPlugin, pluginPath } from './plugin.js'
 import type { AgentProfile, AgentStatus, Entry, SquadConfig, SquadMessage } from './types.js'
 import { HUMAN, TEAM } from './types.js'
 
@@ -43,6 +47,7 @@ export class Squad extends EventEmitter {
   private readonly log: TranscriptLog
   private readonly agentTabs: Tab[] = []
   private state: SquadState
+  private capabilities: Map<string, Capability>
   private saveTimer: NodeJS.Timeout | undefined
   private worktreesEnabled: boolean
   private started = false
@@ -54,6 +59,7 @@ export class Squad extends EventEmitter {
     state: SquadState,
     restored: Map<string, Entry[]>,
     worktreesEnabled: boolean,
+    capabilities: Map<string, Capability>,
   ) {
     super()
     this.setMaxListeners(0)
@@ -62,6 +68,7 @@ export class Squad extends EventEmitter {
     this.workspaces = workspaces
     this.state = state
     this.worktreesEnabled = worktreesEnabled
+    this.capabilities = capabilities
     this.log = new TranscriptLog(config.squadDir)
     this.log.open()
 
@@ -72,7 +79,6 @@ export class Squad extends EventEmitter {
       this.transcripts.set(profile.name, restored.get(profile.name) ?? [])
       this.unseen.set(profile.name, 0)
       this.agentTabs.push({ id: profile.name, label: profile.displayName, kind: 'agent', agent: profile })
-      this.createRunner(profile)
     }
 
     bus.on('message', (message: SquadMessage) => this.onBusMessage(message))
@@ -100,11 +106,14 @@ export class Squad extends EventEmitter {
     })
     const state = await loadState(config.squadDir)
     const restored = await TranscriptLog.load(config.squadDir)
+    const capabilities = await loadCapabilities(config.squadDir)
+    // Regenerate the skill plugin on every launch so edits to a capability take effect.
+    await writeCapabilityPlugin(config.squadDir, capabilities.values())
     // Agents added later must land in a worktree if and only if the others did.
     const worktreesEnabled =
       config.useWorktrees && [...workspaces.values()].every(w => w.branch !== undefined) && !warning
 
-    const squad = new Squad(config, bus, workspaces, state, restored, worktreesEnabled)
+    const squad = new Squad(config, bus, workspaces, state, restored, worktreesEnabled, capabilities)
     if (warning) squad.warnings.push(warning)
     return squad
   }
@@ -122,10 +131,19 @@ export class Squad extends EventEmitter {
     return this.state.lastTab
   }
 
-  start(): void {
+  /** Build every agent's runner (resolving capability servers), then open their sessions. */
+  async start(): Promise<void> {
+    for (const profile of this.config.agents) {
+      if (!this.runners.has(profile.name)) await this.createRunner(profile)
+    }
     for (const runner of this.runners.values()) runner.start()
     this.started = true
     this.emit('update')
+  }
+
+  /** Capabilities available to this project, built-in plus anything in .squad/capabilities. */
+  availableCapabilities(): Capability[] {
+    return [...this.capabilities.values()]
   }
 
   entries(tabId: string): readonly Entry[] {
@@ -141,16 +159,22 @@ export class Squad extends EventEmitter {
   }
 
   statusOf(name: string): AgentStatus {
-    return this.runners.get(name)?.getStatus() ?? { kind: 'stopped' }
+    const runner = this.runners.get(name)
+    if (runner) return runner.getStatus()
+    // Before start(), an agent has no runner yet - that is "starting", not "stopped".
+    return this.started ? { kind: 'stopped' } : { kind: 'starting' }
   }
 
+  /** Lifetime spend, falling back to the persisted total before the runner exists. */
   costOf(name: string): number {
-    return this.runners.get(name)?.getCost() ?? 0
+    const runner = this.runners.get(name)
+    if (runner) return runner.getCost()
+    return this.state.agents[name]?.costUsd ?? 0
   }
 
   totalCost(): number {
     let total = 0
-    for (const runner of this.runners.values()) total += runner.getCost()
+    for (const profile of this.config.agents) total += this.costOf(profile.name)
     return total
   }
 
@@ -193,7 +217,7 @@ export class Squad extends EventEmitter {
     this.unseen.set(profile.name, 0)
     this.agentTabs.push({ id: profile.name, label: profile.displayName, kind: 'agent', agent: profile })
 
-    const runner = this.createRunner(profile)
+    const runner = await this.createRunner(profile)
     if (this.started) runner.start()
 
     // Agents already running baked the old roster into their system prompt, so announce
@@ -240,8 +264,54 @@ export class Squad extends EventEmitter {
     this.bus.close()
   }
 
-  private createRunner(profile: AgentProfile): AgentRunner {
+  /**
+   * Resolve one agent's capabilities into SDK wiring: MCP servers with per-agent paths,
+   * a pre-approved tool list, and the skill allowlist that scopes which capability
+   * skills this agent can invoke.
+   */
+  private async equip(profile: AgentProfile) {
+    const agentDir = path.join(this.config.squadDir, 'data', profile.name)
+    await fs.mkdir(agentDir, { recursive: true })
+
+    const servers: Record<string, McpServerConfig> = {}
+    const tools: string[] = []
+    const skills: string[] = []
+    const secrets: string[] = []
+    const descriptions: Array<{ name: string; description: string }> = []
+
+    for (const name of profile.capabilities) {
+      const capability = this.capabilities.get(name)
+      if (!capability) {
+        this.warnings.push(
+          `@${profile.name} asks for the "${name}" capability, which does not exist. Known: ${[...this.capabilities.keys()].join(', ')}.`,
+        )
+        continue
+      }
+      descriptions.push({ name: capability.name, description: capability.description })
+      skills.push(skillNameFor(capability.name))
+      tools.push(...capability.allowedTools)
+      try {
+        const result = await materializeServers(capability, {
+          agentName: profile.name,
+          agentDir,
+          repoPath: this.config.repoPath,
+          squadDir: this.config.squadDir,
+        })
+        Object.assign(servers, result.servers)
+        secrets.push(...result.secrets)
+        this.warnings.push(...result.warnings)
+      } catch (err) {
+        // A missing credential disables one capability; it must not stop the squad.
+        this.warnings.push(`@${profile.name}: "${name}" could not start - ${(err as Error).message}`)
+      }
+    }
+
+    return { servers, tools, skills, secrets, descriptions, agentDir }
+  }
+
+  private async createRunner(profile: AgentProfile): Promise<AgentRunner> {
     const workspace = this.workspaces.get(profile.name) ?? { path: this.config.repoPath }
+    const equipment = await this.equip(profile)
     const runner = new AgentRunner({
       profile,
       config: this.config,
@@ -254,6 +324,12 @@ export class Squad extends EventEmitter {
       branch: workspace.branch,
       resumeSessionId: this.state.agents[profile.name]?.sessionId,
       priorCostUsd: this.state.agents[profile.name]?.costUsd,
+      capabilityServers: equipment.servers,
+      capabilityTools: equipment.tools,
+      capabilitySkills: equipment.skills,
+      capabilityDescriptions: equipment.descriptions,
+      pluginPath: pluginPath(this.config.squadDir),
+      secrets: equipment.secrets,
     })
     runner.on('entry', (entry: Entry) => this.append(profile.name, entry))
     runner.on('status', () => this.emit('update'))

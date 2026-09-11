@@ -57,6 +57,7 @@ export function App({ squad }: { squad: Squad }) {
   const [historyIndex, setHistoryIndex] = useState<number | undefined>(undefined)
   const [newAgent, setNewAgent] = useState<NewAgentState>(initialNewAgentState)
   const [templates, setTemplates] = useState<Template[]>([])
+  const capabilities = useMemo(() => squad.availableCapabilities(), [squad])
   const [, forceRender] = useState(0)
   const [notice, setNotice] = useState<string | undefined>(
     squad.warnings.length ? squad.warnings.join(' ') : undefined,
@@ -137,7 +138,8 @@ export function App({ squad }: { squad: Squad }) {
                   .profiles()
                   .map(a => {
                     const ws = squad.workspaces.get(a.name)
-                    return `@${a.name}  ${describeStatus(squad.statusOf(a.name))}  ${ws?.branch ?? ws?.path ?? ''}`
+                    const caps = a.capabilities.length > 0 ? `  [${a.capabilities.join(' ')}]` : ''
+                    return `@${a.name}  ${describeStatus(squad.statusOf(a.name))}  ${ws?.branch ?? ws?.path ?? ''}${caps}`
                   })
                   .join('\n'),
           )
@@ -172,7 +174,7 @@ export function App({ squad }: { squad: Squad }) {
   )
 
   const saveNewAgent = useCallback(() => {
-    const { profile, error } = draftToProfile(newAgent.draft, squad.profiles().length)
+    const { profile, error } = draftToProfile(newAgent.draft, squad.profiles().length, newAgent.capabilities)
     if (error || !profile) {
       setNewAgent(prev => ({ ...prev, error }))
       return
@@ -216,6 +218,8 @@ export function App({ squad }: { squad: Squad }) {
             phase: 'form',
             pickerIndex: newAgent.pickerIndex,
             fieldIndex: 0,
+            capIndex: 0,
+            capabilities: template ? [...template.profile.capabilities] : [],
             draft: template ? profileToDraft(template.profile) : emptyDraft(),
             saveToLibrary: false,
           })
@@ -223,7 +227,42 @@ export function App({ squad }: { squad: Squad }) {
         return
       }
 
+      if (newAgent.phase === 'capabilities') {
+        const list = capabilities
+        if (key.escape || (key.ctrl && input === 'e')) {
+          setNewAgent(prev => ({ ...prev, phase: 'form' }))
+          return
+        }
+        if (key.ctrl && input === 's') {
+          saveNewAgent()
+          return
+        }
+        if (key.upArrow) {
+          setNewAgent(prev => ({ ...prev, capIndex: (prev.capIndex - 1 + Math.max(1, list.length)) % Math.max(1, list.length) }))
+          return
+        }
+        if (key.downArrow) {
+          setNewAgent(prev => ({ ...prev, capIndex: (prev.capIndex + 1) % Math.max(1, list.length) }))
+          return
+        }
+        if (input === ' ' || key.return) {
+          const chosen = list[newAgent.capIndex]
+          if (!chosen) return
+          setNewAgent(prev => ({
+            ...prev,
+            capabilities: prev.capabilities.includes(chosen.name)
+              ? prev.capabilities.filter(c => c !== chosen.name)
+              : [...prev.capabilities, chosen.name],
+          }))
+        }
+        return
+      }
+
       // Form phase.
+      if (key.ctrl && input === 'e') {
+        setNewAgent(prev => ({ ...prev, phase: 'capabilities', error: undefined }))
+        return
+      }
       if (key.escape) {
         setNewAgent(prev => ({ ...prev, phase: 'picker', error: undefined }))
         return
@@ -262,7 +301,7 @@ export function App({ squad }: { squad: Squad }) {
       if (key.ctrl || key.meta || key.tab) return
       if (input) edit(v => v + input)
     },
-    [newAgent, templates, saveNewAgent],
+    [newAgent, templates, capabilities, saveNewAgent],
   )
 
   useInput((input, key) => {
@@ -375,7 +414,7 @@ export function App({ squad }: { squad: Squad }) {
         overflow="hidden"
       >
         {isNewTab ? (
-          <AgentForm state={newAgent} templates={templates} />
+          <AgentForm state={newAgent} templates={templates} capabilities={capabilities} />
         ) : (
           <Transcript
             entries={squad.entries(current.id)}

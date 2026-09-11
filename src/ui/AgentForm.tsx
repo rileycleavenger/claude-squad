@@ -1,6 +1,7 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import type { Template } from '../library.js'
+import type { Capability } from '../capability.js'
 
 export const FIELDS = [
   'name',
@@ -53,9 +54,11 @@ export function emptyDraft(): Draft {
 }
 
 export interface NewAgentState {
-  phase: 'picker' | 'form'
+  phase: 'picker' | 'form' | 'capabilities'
   pickerIndex: number
   fieldIndex: number
+  capIndex: number
+  capabilities: string[]
   draft: Draft
   saveToLibrary: boolean
   error?: string
@@ -63,7 +66,15 @@ export interface NewAgentState {
 }
 
 export function initialNewAgentState(): NewAgentState {
-  return { phase: 'picker', pickerIndex: 0, fieldIndex: 0, draft: emptyDraft(), saveToLibrary: false }
+  return {
+    phase: 'picker',
+    pickerIndex: 0,
+    fieldIndex: 0,
+    capIndex: 0,
+    capabilities: [],
+    draft: emptyDraft(),
+    saveToLibrary: false,
+  }
 }
 
 const SOURCE_LABEL: Record<Template['source'], string> = {
@@ -107,8 +118,53 @@ function Picker({ templates, index }: { templates: Template[]; index: number }) 
   )
 }
 
+function Capabilities({ state, available }: { state: NewAgentState; available: Capability[] }) {
+  const { capIndex, capabilities } = state
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      <Text bold>Capabilities</Text>
+      <Text dimColor>
+        {'\u2191\u2193'} move {'\u00b7'} Space toggle {'\u00b7'} ^S create the agent {'\u00b7'} Esc back to the form
+      </Text>
+      <Box height={1} />
+      {available.length === 0 ? (
+        <Text dimColor>No capabilities found.</Text>
+      ) : (
+        available.map((capability, i) => {
+          const on = capabilities.includes(capability.name)
+          const active = i === capIndex
+          return (
+            <Box key={capability.name} flexDirection="row">
+              <Box width={22} flexShrink={0}>
+                <Text color={active ? 'cyan' : undefined} bold={active}>
+                  {active ? '\u276f ' : '  '}
+                  {on ? '[x] ' : '[ ] '}
+                  {capability.name}
+                </Text>
+              </Box>
+              <Box flexGrow={1}>
+                <Text dimColor wrap="wrap">
+                  {capability.description}
+                  {capability.source === 'project' ? ' (this project)' : ''}
+                </Text>
+              </Box>
+            </Box>
+          )
+        })
+      )}
+      {available[capIndex]?.requires ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor wrap="wrap">
+            Requires: {available[capIndex]!.requires!.trim()}
+          </Text>
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
 function Form({ state }: { state: NewAgentState }) {
-  const { draft, fieldIndex, error, saveToLibrary, busy } = state
+  const { draft, fieldIndex, error, saveToLibrary, busy, capabilities } = state
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text bold>New agent</Text>
@@ -139,6 +195,16 @@ function Form({ state }: { state: NewAgentState }) {
           </Box>
         )
       })}
+      <Box flexDirection="row" marginTop={1}>
+        <Box width={16} flexShrink={0}>
+          <Text dimColor>  capabilities</Text>
+        </Box>
+        <Box flexGrow={1}>
+          <Text dimColor wrap="wrap">
+            {capabilities.length > 0 ? capabilities.join(', ') : 'none'} {'\u2014'} ^E to change
+          </Text>
+        </Box>
+      </Box>
       {error ? (
         <Box marginTop={1}>
           <Text color="red">{error}</Text>
@@ -153,10 +219,16 @@ function Form({ state }: { state: NewAgentState }) {
   )
 }
 
-export function AgentForm({ state, templates }: { state: NewAgentState; templates: Template[] }) {
-  return state.phase === 'picker' ? (
-    <Picker templates={templates} index={state.pickerIndex} />
-  ) : (
-    <Form state={state} />
-  )
+export function AgentForm({
+  state,
+  templates,
+  capabilities,
+}: {
+  state: NewAgentState
+  templates: Template[]
+  capabilities: Capability[]
+}) {
+  if (state.phase === 'picker') return <Picker templates={templates} index={state.pickerIndex} />
+  if (state.phase === 'capabilities') return <Capabilities state={state} available={capabilities} />
+  return <Form state={state} />
 }

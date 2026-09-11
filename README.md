@@ -98,6 +98,93 @@ exists.
 Your library lives in `~/.claude-squad/agents/` and is shared across every project, so a
 role you tune once can be reused anywhere.
 
+## Capabilities
+
+An agent is only as good at a tool as it is at *using* it. A capability bundles both
+halves: the **tools** (MCP servers, a pre-approved tool list) and the **technique** (a
+skill that teaches how to use them well and how to tell a real success from a tool call
+that quietly did nothing).
+
+Capabilities are markdown, like agents. Frontmatter wires up the tools, the body is the
+skill:
+
+```markdown
+---
+name: browser
+description: Drive a real browser - navigate, fill forms, extract data
+mcpServers:
+  playwright:
+    command: npx
+    args: ["-y", "@playwright/mcp@latest", "--headless",
+           "--user-data-dir={{agentDir}}/browser"]
+allowedTools: ["mcp__playwright__*"]
+---
+
+# Driving a browser well
+Snapshot before you act; act on a ref from that snapshot; snapshot again and verify the
+state actually changed...
+```
+
+Shipped with claude-squad:
+
+| | |
+| --- | --- |
+| `browser` | Playwright, driving the accessibility tree rather than pixels |
+| `research` | WebSearch + WebFetch, with source discipline |
+| `email` | Read and send through an MCP server you configure |
+| `chrome-devtools` | Debug a running web app: console, network, performance traces |
+| `github` | Open PRs, manage issues, read CI through `gh` |
+| `notify` | Reach you out-of-band when nobody is watching the TUI |
+
+Drop a file in `<repo>/.squad/capabilities/` to add your own, or to override a built-in of
+the same name without forking it.
+
+### Assigning them
+
+Per agent, opt-in — in the profile (`capabilities: [browser, research]`) or from the `+`
+tab with `^E`. Scoping matters: an agent that carries every tool chooses worse than one
+carrying three, and credentials stay confined to the agents that need them.
+
+### Every agent gets its own browser
+
+A persistent browser profile can only be driven by one process at a time, so a shared one
+would make parallel agents fight over it. `{{agentDir}}` expands per agent, giving each
+its own profile under `.squad/data/<agent>/` — the same isolation idea as worktrees.
+Available templates: `{{agentName}}`, `{{agentDir}}`, `{{repoPath}}`, `{{squadDir}}`, and
+`{{env:VAR}}` for non-secret wiring.
+
+### Secrets
+
+Reference credentials as `{{secret:...}}` in a capability's `env` block:
+
+```yaml
+env:
+  API_TOKEN: "{{secret:keychain:my-service}}"   # macOS Keychain
+  OTHER:     "{{secret:op://vault/item/field}}" # 1Password CLI
+  THIRD:     "{{secret:MY_ENV_VAR}}"            # environment
+```
+
+They are resolved at spawn time and injected **only into that MCP server's environment**.
+They never reach a profile, a transcript, the history log or the state file — and the
+agent never sees the value in its own context, only the server it talks to does. That is
+deliberately narrower than giving an agent a "read any secret" tool.
+
+If a capability isn't configured, its server is skipped with a warning and the agent
+keeps the technique skill but gets no tools — rather than starting a broken server and
+leaving the agent to improvise.
+
+### Running unattended
+
+The goal is a squad that works with nobody watching, so no capability may require
+interactive auth. Log in once by hand and hand the agent the result:
+
+- **browser** — capture a signed-in session with `--save-session`, pass it via
+  `--storage-state`. The agent reuses the session and never sees a password.
+- **github** — `gh auth login` once; the agent only ever uses the existing token.
+- **email and friends** — credentials come from the secret store, never a login prompt.
+
+Pair that with `notify` so a blocked agent can reach you instead of idling silently.
+
 ## Picking up where you left off
 
 Relaunching a squad in a project restores:
@@ -175,9 +262,10 @@ shows the running total, and lighter roles do fine on `claude-sonnet-5`.
 ## Development
 
 ```sh
-npm test              # routing, config, drafts, persistence, controller (no API calls)
+npm test              # routing, config, capabilities, secrets, persistence (no API calls)
 npm run smoke         # one real agent: proves session continuity and worktree writes
 npm run integration   # two real agents: groupchat, @mention handoff, worktree isolation
+npm run capabilities  # one real agent driving a real browser through the browser capability
 ```
 
 `smoke` and `integration` call the API. They default to `claude-haiku-4-5` since they

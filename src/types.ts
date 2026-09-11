@@ -16,6 +16,14 @@ export interface AgentProfile {
   color: string
   /** Tool allowlist passed to the SDK; undefined means "all built-ins". */
   tools?: string[]
+  /** Capability names this agent is equipped with, from `.squad/capabilities` or built-ins. */
+  capabilities: string[]
+  /**
+   * Extra skill names to keep available alongside the capabilities. Equipping an agent
+   * with capabilities scopes its skill list, which also hides Claude Code's bundled
+   * skills; list any you want back (e.g. `code-review`).
+   */
+  skills?: string[]
   budgetUsd?: number
   /** The markdown body of the profile: this agent's system instructions. */
   instructions: string

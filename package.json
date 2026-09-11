@@ -15,7 +15,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test test/*.test.ts",
     "smoke": "tsx src/dev/smoke.ts",
-    "integration": "tsx src/dev/integration.ts"
+    "integration": "tsx src/dev/integration.ts",
+    "capabilities": "tsx src/dev/capability-e2e.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.268",

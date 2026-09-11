@@ -5,3 +5,5 @@ dist/
 .squad/history.jsonl
 .squad/state.json
 .squad/transcript.jsonl
+.squad/data/
+.squad/.plugin/

@@ -29,7 +29,7 @@ export interface DraftResult {
  * Validation runs by serializing to markdown and parsing it back with the same loader
  * used at startup, so anything accepted here is guaranteed to load next launch.
  */
-export function draftToProfile(draft: Draft, index = 0): DraftResult {
+export function draftToProfile(draft: Draft, index = 0, capabilities: string[] = []): DraftResult {
   const name = draft.name.trim()
   if (!name) return { error: 'A handle is required - it is how teammates @mention this agent.' }
   if (draft.budgetUsd.trim() && !(Number(draft.budgetUsd) > 0)) {
@@ -44,6 +44,7 @@ export function draftToProfile(draft: Draft, index = 0): DraftResult {
     effort: (draft.effort.trim() || undefined) as AgentProfile['effort'],
     color: draft.color.trim() || FALLBACK_COLORS[index % FALLBACK_COLORS.length]!,
     budgetUsd: draft.budgetUsd.trim() ? Number(draft.budgetUsd) : undefined,
+    capabilities,
     instructions: draft.instructions.trim(),
   }
 

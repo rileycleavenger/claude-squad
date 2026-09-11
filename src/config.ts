@@ -43,6 +43,22 @@ export function parseProfile(file: string, raw: string, index: number): AgentPro
     tools = data.tools as string[]
   }
 
+  let capabilities: string[] = []
+  if (data.capabilities !== undefined) {
+    if (!Array.isArray(data.capabilities) || data.capabilities.some((c: unknown) => typeof c !== 'string')) {
+      throw new ConfigError(`${file}: "capabilities" must be a list of capability names`)
+    }
+    capabilities = (data.capabilities as string[]).map(c => c.trim()).filter(Boolean)
+  }
+
+  let skills: string[] | undefined
+  if (data.skills !== undefined) {
+    if (!Array.isArray(data.skills) || data.skills.some((c: unknown) => typeof c !== 'string')) {
+      throw new ConfigError(`${file}: "skills" must be a list of skill names`)
+    }
+    skills = (data.skills as string[]).map(c => c.trim()).filter(Boolean)
+  }
+
   let budgetUsd: number | undefined
   if (data.budgetUsd !== undefined) {
     if (typeof data.budgetUsd !== 'number' || !(data.budgetUsd > 0)) {
@@ -59,6 +75,8 @@ export function parseProfile(file: string, raw: string, index: number): AgentPro
     effort,
     color: asString(data.color, 'color', file) ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length]!,
     tools,
+    capabilities,
+    skills,
     budgetUsd,
     instructions,
   }
@@ -169,6 +187,8 @@ export function serializeProfile(profile: AgentProfile): string {
   if (profile.effort) front.push(`effort: ${profile.effort}`)
   if (profile.budgetUsd !== undefined) front.push(`budgetUsd: ${profile.budgetUsd}`)
   if (profile.tools) front.push(`tools: [${profile.tools.join(', ')}]`)
+  if (profile.capabilities.length > 0) front.push(`capabilities: [${profile.capabilities.join(', ')}]`)
+  if (profile.skills?.length) front.push(`skills: [${profile.skills.join(', ')}]`)
   return `---\n${front.join('\n')}\n---\n\n${profile.instructions.trim()}\n`
 }
 

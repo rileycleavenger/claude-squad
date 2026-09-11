@@ -10,6 +10,7 @@ export const DEFAULT_PROFILES: DefaultProfile[] = [
     file: 'architect.md',
     content: `---
 name: architect
+capabilities: [research]
 displayName: Architect
 role: System architect - owns technical design, structure and cross-cutting decisions
 color: cyan
@@ -40,6 +41,7 @@ When you need a decision from the product owner, @mention them rather than guess
     file: 'engineer.md',
     content: `---
 name: engineer
+capabilities: [github, research]
 displayName: Engineer
 role: Software engineer - writes, tests and debugs the actual implementation
 color: green
@@ -69,6 +71,7 @@ Match the conventions of the existing codebase over your own preferences.
     file: 'product.md',
     content: `---
 name: product
+capabilities: [research]
 displayName: Product
 role: Product owner - owns requirements, scope, priorities and acceptance criteria
 color: magenta
@@ -100,6 +103,7 @@ You do not write production code. You may write specs, criteria and documentatio
     file: 'marketing.md',
     content: `---
 name: marketing
+capabilities: [research, browser]
 displayName: Marketing
 role: Sales and marketing - owns positioning, messaging and go-to-market
 color: yellow

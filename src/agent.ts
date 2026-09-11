@@ -8,6 +8,8 @@ import { buildRolePrompt, SQUAD_TOOL_NAMES } from './prompt.js'
 import { buildSquadServer, type SquadDirectory } from './tools.js'
 import type { AgentProfile, AgentStatus, Entry, SquadConfig } from './types.js'
 import { summarizeToolUse } from './toolsummary.js'
+import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
+import { redact } from './secrets.js'
 
 export interface RunnerDeps {
   profile: AgentProfile
@@ -22,6 +24,18 @@ export interface RunnerDeps {
   resumeSessionId?: string
   /** Spend already recorded for this agent in earlier launches. */
   priorCostUsd?: number
+  /** MCP servers contributed by this agent's capabilities, already templated per agent. */
+  capabilityServers?: Record<string, McpServerConfig>
+  /** Tool patterns the capabilities pre-approve. */
+  capabilityTools?: string[]
+  /** Capability skill names (`squad:browser`), used as this agent's skill allowlist. */
+  capabilitySkills?: string[]
+  /** Path to the generated capability plugin. */
+  pluginPath?: string
+  /** Resolved secret values, so they can be scrubbed from anything user-visible. */
+  secrets?: string[]
+  /** `name - description` for each capability, for the agent's system prompt. */
+  capabilityDescriptions?: Array<{ name: string; description: string }>
 }
 
 /**
@@ -44,6 +58,7 @@ export class AgentRunner extends EventEmitter {
   private turns = 0
   private ready = false
   private sessionId: string | undefined
+  private ourServerNames = new Set<string>()
   /** Timestamps of recent automatic unread flushes, used to damp agent-to-agent loops. */
   private flushes: number[] = []
 
@@ -77,6 +92,11 @@ export class AgentRunner extends EventEmitter {
   start(): void {
     const { profile, config, bus, directory, workdir, branch } = this.deps
 
+    const capabilityServers = this.deps.capabilityServers ?? {}
+    this.ourServerNames = new Set(Object.keys(capabilityServers))
+    const capabilityTools = this.deps.capabilityTools ?? []
+    const capabilitySkills = this.deps.capabilitySkills ?? []
+
     const options: Options = {
       cwd: workdir,
       model: profile.model ?? config.defaultModel,
@@ -84,12 +104,28 @@ export class AgentRunner extends EventEmitter {
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: buildRolePrompt({ me: profile, roster: config.agents, workdir, branch }),
+        append: buildRolePrompt({
+          me: profile,
+          roster: config.agents,
+          workdir,
+          branch,
+          capabilities: this.deps.capabilityDescriptions,
+        }),
       },
-      mcpServers: { squad: buildSquadServer(this.name, bus, directory) },
+      mcpServers: { squad: buildSquadServer(this.name, bus, directory), ...capabilityServers },
       // A profile that pins a tool allowlist must still keep its squad tools, or the
-      // agent is silently mute.
-      allowedTools: profile.tools ? [...profile.tools, ...SQUAD_TOOL_NAMES] : undefined,
+      // agent is silently mute. Capability tools are always pre-approved.
+      allowedTools: profile.tools
+        ? [...profile.tools, ...SQUAD_TOOL_NAMES, ...capabilityTools]
+        : undefined,
+      // Only scope skills when the agent actually has capabilities; otherwise leave the
+      // CLI's own defaults alone rather than silently removing its bundled skills.
+      ...(capabilitySkills.length > 0
+        ? {
+            skills: [...capabilitySkills, ...(profile.skills ?? [])],
+            plugins: this.deps.pluginPath ? [{ type: 'local' as const, path: this.deps.pluginPath }] : undefined,
+          }
+        : {}),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       maxBudgetUsd: profile.budgetUsd ?? config.defaultBudgetUsd,
@@ -160,6 +196,7 @@ export class AgentRunner extends EventEmitter {
           this.noteSession(message.session_id)
           if (!this.ready) {
             this.ready = true
+            this.reportMcpHealth(message.mcp_servers, this.ourServerNames)
             this.emit('ready', message.model)
           }
         }
@@ -236,6 +273,26 @@ export class AgentRunner extends EventEmitter {
     if (pending.length === 0) return
     this.flushes.push(now)
     this.send(renderUnread(pending))
+  }
+
+  /**
+   * A capability whose MCP server fails to start is otherwise invisible: the agent simply
+   * has no tools and improvises. Surface it in the agent's own tab instead.
+   */
+  private reportMcpHealth(
+    servers: Array<{ name: string; status: string }> | undefined,
+    ours: Set<string>,
+  ): void {
+    for (const server of servers ?? []) {
+      // Only servers this agent's capabilities asked for. Anything else in the session
+      // came from the environment and is not the squad's to complain about.
+      if (!ours.has(server.name)) continue
+      if (server.status === 'connected' || server.status === 'pending') continue
+      this.emitEntry({
+        kind: 'error',
+        text: `The "${server.name}" tool server is ${server.status}, so that capability's tools are unavailable.`,
+      })
+    }
   }
 
   private noteSession(id: string | undefined): void {
