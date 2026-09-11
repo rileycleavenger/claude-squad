@@ -13,7 +13,7 @@ import { listTemplates, type Template } from '../library.js'
 import { draftToProfile, profileToDraft } from '../draft.js'
 import type { AgentProfile, AgentStatus } from '../types.js'
 import { hitTest, installMouse, isLeftClick, parseMouse, type Rect } from './mouse.js'
-import { computeLayout } from './layout.js'
+import { computeLayout, terminalSize } from './layout.js'
 
 const HELP = [
   '← →            switch tabs (Tab also works)',
@@ -125,6 +125,16 @@ export function App({ squad }: { squad: Squad }) {
     if (process.env.SQUAD_NO_MOUSE === '1') return
     // 1 is stdout: the restore must be written synchronously to the fd on exit.
     return installMouse(data => stdout.write(data), 1)
+  }, [stdout])
+
+  useEffect(() => {
+    // A host that reports its size late (or resizes the pane) must redraw, or the app
+    // stays laid out for the size it guessed at startup.
+    const onResize = () => forceRender(n => n + 1)
+    stdout?.on('resize', onResize)
+    return () => {
+      stdout?.off('resize', onResize)
+    }
   }, [stdout])
 
   useEffect(() => {
@@ -513,8 +523,7 @@ export function App({ squad }: { squad: Squad }) {
   })
 
   const tabBar = useBoxMetrics(tabBarRef)
-  const rows = stdout?.rows ?? 24
-  const columns = stdout?.columns ?? 80
+  const { rows, columns } = terminalSize(stdout?.rows, stdout?.columns)
   const noticeLines = notice ? Math.min(notice.split('\n').length, 8) + 2 : 0
   // The tab bar wraps onto extra rows when the terminal is narrow or the squad is large.
   // Measuring it - rather than assuming one row - is what keeps the app inside the

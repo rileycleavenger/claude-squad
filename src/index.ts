@@ -6,6 +6,7 @@ import { render } from 'ink'
 import { App } from './ui/App.js'
 import { Squad } from './squad.js'
 import { ConfigError, initSquad } from './config.js'
+import { restoreTerminal } from './ui/mouse.js'
 
 const USAGE = `claude-squad - a terminal workspace for a squad of Claude agents
 
@@ -87,10 +88,15 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  // Get off the alternate screen first: output written to it is wiped on restore, which
+  // would turn a crash into an unexplained blank screen.
+  restoreTerminal()
   if (err instanceof ConfigError) {
     process.stderr.write(`${err.message}\n`)
   } else {
-    process.stderr.write(`squad: ${(err as Error).message}\n`)
+    const error = err as Error
+    process.stderr.write(`squad: ${error.message}\n`)
+    if (error.stack) process.stderr.write(`${error.stack}\n`)
   }
   process.exitCode = 1
 })

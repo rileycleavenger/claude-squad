@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeLayout } from '../src/ui/layout.js'
+import { computeLayout, terminalSize } from '../src/ui/layout.js'
 
 const base = { rows: 24, tabBarHeight: 1, noticeLines: 0, showingForm: false }
 
@@ -74,5 +74,34 @@ test('absurd inputs still produce a usable layout', () => {
     const layout = computeLayout(input)
     assert.ok(layout.paneHeight >= 1)
     assert.ok(layout.totalHeight >= 1)
+  }
+})
+
+test('a terminal that reports no usable size falls back instead of rendering nothing', () => {
+  // A host that does not propagate the window size reports 0. `?? 24` does not catch 0,
+  // and a root box of height 0 renders the whole app as no lines - a blank screen.
+  assert.deepEqual(terminalSize(0, 0), { rows: 24, columns: 80 })
+  assert.deepEqual(terminalSize(undefined, undefined), { rows: 24, columns: 80 })
+  assert.deepEqual(terminalSize(Number.NaN, Number.NaN), { rows: 24, columns: 80 })
+  assert.deepEqual(terminalSize(-5, -5), { rows: 24, columns: 80 })
+  assert.deepEqual(terminalSize(Number.POSITIVE_INFINITY, 100), { rows: 24, columns: 100 })
+})
+
+test('a real terminal size is used as reported', () => {
+  assert.deepEqual(terminalSize(40, 120), { rows: 40, columns: 120 })
+  assert.deepEqual(terminalSize(24.7, 80.9), { rows: 24, columns: 80 }, 'fractional sizes are floored')
+})
+
+test('a size too small to draw into falls back rather than collapsing', () => {
+  assert.equal(terminalSize(2, 80).rows, 24)
+  assert.equal(terminalSize(24, 4).columns, 80)
+})
+
+test('every fallback size still produces a drawable layout', () => {
+  for (const [r, c] of [[0, 0], [undefined, undefined], [1, 1], [2, 10]] as const) {
+    const { rows } = terminalSize(r, c)
+    const layout = computeLayout({ rows, tabBarHeight: 3, noticeLines: 0, showingForm: false })
+    assert.ok(layout.totalHeight >= 1 && layout.totalHeight <= rows)
+    assert.ok(layout.paneHeight >= 1)
   }
 })

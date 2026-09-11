@@ -82,7 +82,9 @@ terminal's own text selection needs **Shift** held down, since the app is receiv
 mouse. Mouse reporting is turned off again on exit, including on `SIGTERM` and `SIGHUP`.
 
 **Running inside another tool?** Some hosts embed a terminal that doesn't implement the
-alternate screen. Set `SQUAD_NO_MOUSE=1` to keep claude-squad on the normal screen:
+alternate screen, or don't report a window size. claude-squad falls back to 24x80 when the
+reported size isn't usable, and redraws as soon as a real size arrives. If the display is
+still wrong, set `SQUAD_NO_MOUSE=1` to keep it on the normal screen:
 
 ```sh
 SQUAD_NO_MOUSE=1 squad

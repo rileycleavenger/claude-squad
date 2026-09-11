@@ -19,6 +19,29 @@ export const ENABLE_MOUSE = `${ESC}[?1049h${ESC}[?1000h${ESC}[?1006h`
 /** Restore the terminal: mouse off, back to the normal screen. */
 export const DISABLE_MOUSE = `${ESC}[?1006l${ESC}[?1000l${ESC}[?1049l`
 
+/**
+ * Put the terminal back on the normal screen, synchronously.
+ *
+ * Anything printed while the alternate screen is active is wiped when the terminal
+ * restores, so a crash message would vanish and the failure would look like a blank
+ * screen. Call this before reporting an error.
+ */
+export function restoreTerminal(fd = 1): void {
+  // Only meaningful if the alternate screen was actually entered; otherwise this would
+  // print escape codes into output that was never a terminal takeover, such as a config
+  // error before the TUI starts, or piped output.
+  if (!entered) return
+  entered = false
+  try {
+    writeSync(fd, DISABLE_MOUSE)
+  } catch {
+    // The terminal is already gone; there is nothing to restore.
+  }
+}
+
+/** Whether the app has taken over the terminal and still owes it a restore. */
+let entered = false
+
 export interface MouseEvent {
   /** 0-based column. */
   col: number
@@ -67,6 +90,7 @@ export function installMouse(write: (data: string) => void, fd = 1): () => void 
   const restore = (): void => {
     if (restored) return
     restored = true
+    entered = false
     try {
       // Synchronous, so it cannot be lost to a process exiting behind a buffered write.
       writeSync(fd, DISABLE_MOUSE)
@@ -85,6 +109,7 @@ export function installMouse(write: (data: string) => void, fd = 1): () => void 
   ]
 
   write(ENABLE_MOUSE)
+  entered = true
   process.once('exit', restore)
   for (const [signal, handler] of handlers) {
     process.once(signal, () => {

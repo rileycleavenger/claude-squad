@@ -53,3 +53,27 @@ export function computeLayout({ rows, tabBarHeight, noticeLines, showingForm }: 
     totalHeight: Math.min(safeRows, chrome + paneHeight),
   }
 }
+
+/** Smallest viewport worth trying to draw into. */
+export const MIN_ROWS = 4
+export const MIN_COLUMNS = 20
+
+/**
+ * Trust the terminal's reported size only when it is actually usable.
+ *
+ * A host that does not propagate the window size reports 0 (or nothing at all), and a
+ * `?? fallback` does not catch 0 - it flows straight through to the root box as
+ * `height={0}`, which renders the entire app as no lines: a blank screen with no error.
+ * Anything non-finite or too small falls back to a size that at least draws something.
+ */
+export function terminalSize(
+  reportedRows: number | undefined,
+  reportedColumns: number | undefined,
+): { rows: number; columns: number } {
+  const usable = (value: number | undefined, min: number): boolean =>
+    typeof value === 'number' && Number.isFinite(value) && value >= min
+  return {
+    rows: usable(reportedRows, MIN_ROWS) ? Math.floor(reportedRows!) : 24,
+    columns: usable(reportedColumns, MIN_COLUMNS) ? Math.floor(reportedColumns!) : 80,
+  }
+}
