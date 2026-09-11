@@ -13,6 +13,7 @@ import { listTemplates, type Template } from '../library.js'
 import { draftToProfile, profileToDraft } from '../draft.js'
 import type { AgentProfile, AgentStatus } from '../types.js'
 import { hitTest, installMouse, isLeftClick, parseMouse, type Rect } from './mouse.js'
+import { computeLayout } from './layout.js'
 
 const HELP = [
   '← →            switch tabs (Tab also works)',
@@ -117,6 +118,11 @@ export function App({ squad }: { squad: Squad }) {
 
   useEffect(() => {
     if (!stdout?.isTTY) return
+    // Some hosts embed the TUI in a pane that does not implement the alternate screen.
+    // SQUAD_NO_MOUSE=1 keeps the app on the normal screen; click-to-switch goes with it,
+    // because without the alternate screen there is no way to know which physical row the
+    // app starts on, so clicks could not be mapped to tabs reliably.
+    if (process.env.SQUAD_NO_MOUSE === '1') return
     // 1 is stdout: the restore must be written synchronously to the fd on exit.
     return installMouse(data => stdout.write(data), 1)
   }, [stdout])
@@ -508,20 +514,40 @@ export function App({ squad }: { squad: Squad }) {
 
   const tabBar = useBoxMetrics(tabBarRef)
   const rows = stdout?.rows ?? 24
-  const noticeLines = notice ? notice.split('\n').length + 2 : 0
-  const paneHeight = Math.max(4, rows - 8 - noticeLines)
+  const columns = stdout?.columns ?? 80
+  const noticeLines = notice ? Math.min(notice.split('\n').length, 8) + 2 : 0
+  // The tab bar wraps onto extra rows when the terminal is narrow or the squad is large.
+  // Measuring it - rather than assuming one row - is what keeps the app inside the
+  // viewport; assuming pushed the title and the tabs off the top of a narrow terminal,
+  // where they were simply gone.
+  const { paneHeight, showTitle, showFooter } = computeLayout({
+    rows,
+    tabBarHeight: tabBar.hasMeasured ? tabBar.height : 1,
+    noticeLines,
+    showingForm,
+  })
 
   const title = useMemo(() => squad.config.repoPath.split('/').filter(Boolean).pop() ?? 'repo', [squad])
   const agents = squad.profiles()
 
   return (
-    <Box flexDirection="column" width="100%">
-      <Box>
-        <Text bold>claude-squad</Text>
-        <Text dimColor> {'─'} {title}</Text>
-      </Box>
+    // A hard ceiling on the whole app: whatever the layout does, Ink must never emit more
+    // lines than the terminal has. If it does, the terminal scrolls and the top - the
+    // title and the tab bar - is gone, with no way to scroll back to it.
+    <Box flexDirection="column" width={columns} height={rows} overflow="hidden">
+      {showTitle ? (
+        <Box flexShrink={0} height={1} overflow="hidden">
+          <Text bold wrap="truncate">
+            claude-squad
+          </Text>
+          <Text dimColor wrap="truncate">
+            {' '}
+            {'─'} {title}
+          </Text>
+        </Box>
+      ) : null}
 
-      <Box flexDirection="row" flexWrap="wrap" ref={tabBarRef}>
+      <Box flexDirection="row" flexWrap="wrap" flexShrink={0} ref={tabBarRef}>
         {tabs.map(tab => {
           const isActive = tab.id === current.id
           const status = tab.agent ? squad.statusOf(tab.agent.name) : undefined
@@ -570,32 +596,40 @@ export function App({ squad }: { squad: Squad }) {
         <Box>
           <Text color="cyan">{current.id === GROUP_TAB ? '#groupchat ' : `@${current.id} `}</Text>
           <Text>&gt; </Text>
-          <Text>{draft}</Text>
-          <Text inverse>{' '}</Text>
+          <Box flexGrow={1} overflow="hidden">
+            <Text wrap="truncate-start">
+              {draft}
+              <Text inverse>{' '}</Text>
+            </Text>
+          </Box>
         </Box>
       )}
 
-      <Box flexDirection="row">
-        {agents.length === 0 ? (
-          <Text dimColor>no agents yet {'─'} open the + tab to add one</Text>
-        ) : (
-          agents.map(agent => {
-            const status = squad.statusOf(agent.name)
-            return (
-              <Box key={agent.name} marginRight={1}>
-                <Text color={statusColor(status)} dimColor={status.kind === 'idle'}>
-                  {agent.name}:{describeStatus(status)}
-                </Text>
-              </Box>
-            )
-          })
-        )}
-        <Box flexGrow={1} justifyContent="flex-end">
-          <Text dimColor>
-            {`$${squad.totalCost().toFixed(2)} · ←→ tabs · ^K stop · ^C quit`}
-          </Text>
+      {showFooter ? (
+        <Box flexDirection="row" flexShrink={0} height={1} overflow="hidden">
+          {agents.length === 0 ? (
+            <Text dimColor wrap="truncate">
+              no agents yet {'─'} open the + tab to add one
+            </Text>
+          ) : (
+            agents.map(agent => {
+              const status = squad.statusOf(agent.name)
+              return (
+                <Box key={agent.name} marginRight={1} flexShrink={0}>
+                  <Text color={statusColor(status)} dimColor={status.kind === 'idle'} wrap="truncate">
+                    {agent.name}:{describeStatus(status)}
+                  </Text>
+                </Box>
+              )
+            })
+          )}
+          <Box flexGrow={1} justifyContent="flex-end" overflow="hidden">
+            <Text dimColor wrap="truncate">
+              {`$${squad.totalCost().toFixed(2)} · ←→ tabs · ^E config · ^K stop · ^C quit`}
+            </Text>
+          </Box>
         </Box>
-      </Box>
+      ) : null}
     </Box>
   )
 }

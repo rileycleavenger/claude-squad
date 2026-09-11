@@ -81,6 +81,24 @@ on exit (it is saved, and comes back next launch), and while the app is running 
 terminal's own text selection needs **Shift** held down, since the app is receiving the
 mouse. Mouse reporting is turned off again on exit, including on `SIGTERM` and `SIGHUP`.
 
+**Running inside another tool?** Some hosts embed a terminal that doesn't implement the
+alternate screen. Set `SQUAD_NO_MOUSE=1` to keep claude-squad on the normal screen:
+
+```sh
+SQUAD_NO_MOUSE=1 squad
+```
+
+Clicking tabs turns off with it — without the alternate screen there's no reliable way to
+know which physical row the app starts on, so a click can't be mapped to a tab. Keyboard
+navigation is unaffected.
+
+### Small terminals
+
+The layout measures the tab bar rather than assuming it is one row, so a wrapped tab bar
+takes its space from the transcript instead of pushing the tabs off the top of the screen.
+When the viewport gets genuinely tight the footer is dropped first, then the title — the
+tab bar and the composer are the last things to go. It stays usable down to about 8 rows.
+
 | Command | |
 | --- | --- |
 | `/status` | every agent's state and branch |
