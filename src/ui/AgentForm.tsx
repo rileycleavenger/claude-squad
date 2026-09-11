@@ -40,6 +40,14 @@ export const FIELD_HINTS: Record<FieldKey, string> = {
 
 export type Draft = Record<FieldKey, string>
 
+/**
+ * Fields the operator can edit. The handle is fixed once an agent exists: it is also the
+ * branch name, the worktree directory and the @mention every teammate already uses.
+ */
+export function editableFields(mode: 'new' | 'edit'): readonly FieldKey[] {
+  return mode === 'new' ? FIELDS : FIELDS.filter(f => f !== 'name')
+}
+
 export function emptyDraft(): Draft {
   return {
     name: '',
@@ -55,6 +63,8 @@ export function emptyDraft(): Draft {
 
 export interface NewAgentState {
   phase: 'picker' | 'form' | 'capabilities'
+  /** `new` builds an agent from scratch; `edit` reconfigures one already on the squad. */
+  mode: 'new' | 'edit'
   pickerIndex: number
   fieldIndex: number
   capIndex: number
@@ -68,6 +78,7 @@ export interface NewAgentState {
 export function initialNewAgentState(): NewAgentState {
   return {
     phase: 'picker',
+    mode: 'new',
     pickerIndex: 0,
     fieldIndex: 0,
     capIndex: 0,
@@ -122,9 +133,10 @@ function Capabilities({ state, available }: { state: NewAgentState; available: C
   const { capIndex, capabilities } = state
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text bold>Capabilities</Text>
+      <Text bold>Capabilities{state.mode === 'edit' ? ` \u2014 @${state.draft.name}` : ''}</Text>
       <Text dimColor>
-        {'\u2191\u2193'} move {'\u00b7'} Space toggle {'\u00b7'} ^S create the agent {'\u00b7'} Esc back to the form
+        {'\u2191\u2193'} move {'\u00b7'} Space toggle {'\u00b7'} ^S {state.mode === 'edit' ? 'apply' : 'create the agent'}{' '}
+        {'\u00b7'} Esc back to the form
       </Text>
       <Box height={1} />
       {available.length === 0 ? (
@@ -164,16 +176,31 @@ function Capabilities({ state, available }: { state: NewAgentState; available: C
 }
 
 function Form({ state }: { state: NewAgentState }) {
-  const { draft, fieldIndex, error, saveToLibrary, busy, capabilities } = state
+  const { draft, fieldIndex, error, saveToLibrary, busy, capabilities, mode } = state
+  const fields = editableFields(mode)
+  const isEdit = mode === 'edit'
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text bold>New agent</Text>
+      <Text bold>{isEdit ? `Edit @${draft.name}` : 'New agent'}</Text>
       <Text dimColor>
-        {'↑↓'} field {'·'} type to edit {'·'} ^S save {'·'} ^L library:{' '}
-        {saveToLibrary ? 'yes' : 'no'} {'·'} Esc back
+        {'↑↓'} field {'·'} type to edit {'·'} ^E capabilities {'·'} ^S{' '}
+        {isEdit ? 'apply' : 'save'}
+        {isEdit ? '' : ` · ^L library: ${saveToLibrary ? 'yes' : 'no'}`} {'·'} Esc cancel
       </Text>
       <Box height={1} />
-      {FIELDS.map((field, i) => {
+      {isEdit ? (
+        <Box flexDirection="row">
+          <Box width={16} flexShrink={0}>
+            <Text dimColor>{'  handle'}</Text>
+          </Box>
+          <Box flexGrow={1}>
+            <Text dimColor wrap="wrap">
+              {draft.name} {'—'} fixed: also the branch name and the @mention teammates use
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
+      {fields.map((field, i) => {
         const active = i === fieldIndex
         const value = draft[field]
         const multiline = field === 'instructions'
@@ -212,7 +239,9 @@ function Form({ state }: { state: NewAgentState }) {
       ) : null}
       {busy ? (
         <Box marginTop={1}>
-          <Text color="yellow">Creating the agent and its worktree{'…'}</Text>
+          <Text color="yellow">
+            {isEdit ? 'Applying the new configuration…' : 'Creating the agent and its worktree…'}
+          </Text>
         </Box>
       ) : null}
     </Box>

@@ -48,6 +48,8 @@ export class Squad extends EventEmitter {
   private readonly agentTabs: Tab[] = []
   private state: SquadState
   private capabilities: Map<string, Capability>
+  /** Catch-up text queued for an agent whose session had to be restarted. */
+  private readonly primers = new Map<string, string>()
   private saveTimer: NodeJS.Timeout | undefined
   private worktreesEnabled: boolean
   private started = false
@@ -232,6 +234,125 @@ export class Squad extends EventEmitter {
     this.emit('update')
   }
 
+  /**
+   * Which parts of a profile can change without a new session.
+   *
+   * Instructions, role, capabilities, effort and budget are all fixed when a session is
+   * created - and a resumed session keeps the system prompt it started with, so there is
+   * no way to change them in place. Everything else is cosmetic or settable live.
+   */
+  private needsRestart(before: AgentProfile, after: AgentProfile): boolean {
+    return (
+      before.instructions !== after.instructions ||
+      before.role !== after.role ||
+      before.effort !== after.effort ||
+      before.budgetUsd !== after.budgetUsd ||
+      before.capabilities.join(',') !== after.capabilities.join(',') ||
+      (before.skills ?? []).join(',') !== (after.skills ?? []).join(',') ||
+      (before.tools ?? []).join(',') !== (after.tools ?? []).join(',')
+    )
+  }
+
+  /**
+   * Apply an edited profile to a running agent.
+   *
+   * Cosmetic edits apply in place. Anything that lives in the system prompt or the tool
+   * wiring needs a fresh session, because a resumed one keeps its original system prompt
+   * - so the agent is restarted and handed a catch-up primer instead. The transcript in
+   * the UI is untouched either way; only the agent's own context restarts.
+   */
+  async updateAgent(profile: AgentProfile): Promise<{ restarted: boolean }> {
+    const index = this.config.agents.findIndex(a => a.name === profile.name)
+    if (index < 0) throw new Error(`@${profile.name} is not on the squad.`)
+    const before = this.config.agents[index]!
+
+    await writeProfile(this.config.squadDir, profile)
+    this.config.agents[index] = profile
+
+    const tab = this.agentTabs.find(t => t.id === profile.name)
+    if (tab) {
+      tab.label = profile.displayName
+      tab.agent = profile
+    }
+
+    const restart = this.needsRestart(before, profile)
+    if (!restart) {
+      const runner = this.runners.get(profile.name)
+      if (runner && profile.model !== before.model) await runner.setModel(profile.model)
+      this.append(profile.name, {
+        id: randomUUID(),
+        ts: Date.now(),
+        kind: 'notice',
+        agent: profile.name,
+        text: 'Configuration updated. No restart was needed, so the conversation continues as-is.',
+      })
+      this.emit('update')
+      return { restarted: false }
+    }
+
+    const existing = this.runners.get(profile.name)
+    if (existing) {
+      // Keep the lifetime cost, then detach so the dying runner cannot write to the tab.
+      this.captureState()
+      existing.removeAllListeners()
+      await existing.stop()
+      this.runners.delete(profile.name)
+    }
+    // A fresh session is the point: drop the old one so the new prompt actually applies.
+    const carried = this.state.agents[profile.name]
+    this.state.agents[profile.name] = { costUsd: carried?.costUsd }
+    // Persist immediately rather than on the usual debounce: if this write were lost to a
+    // crash, the next launch would resume the old session and silently undo the edit.
+    await saveState(this.config.squadDir, this.state)
+
+    this.primers.set(profile.name, this.buildPrimer(profile.name))
+    const runner = await this.createRunner(profile)
+    this.primers.delete(profile.name)
+    if (this.started) runner.start()
+
+    this.append(profile.name, {
+      id: randomUUID(),
+      ts: Date.now(),
+      kind: 'notice',
+      agent: profile.name,
+      text: 'Configuration updated. This needed a fresh session for the new setup to take effect, so the agent restarted with a summary of what it was doing. The transcript above is unchanged.',
+    })
+    this.emit('update')
+    return { restarted: true }
+  }
+
+  /** Assemble a catch-up note for a restarted agent from what it was just doing. */
+  private buildPrimer(name: string): string {
+    const recent = (this.transcripts.get(name) ?? [])
+      .filter(e => e.kind === 'chat')
+      .slice(-12)
+      .map(e => {
+        const entry = e as Extract<Entry, { kind: 'chat' }>
+        const who = entry.from === HUMAN ? 'operator' : `@${entry.from}`
+        return `- ${who}: ${entry.text.replace(/\s+/g, ' ').slice(0, 280)}`
+      })
+
+    const group = this.transcripts
+      .get(GROUP_TAB)!
+      .filter(e => e.kind === 'chat')
+      .slice(-6)
+      .map(e => {
+        const entry = e as Extract<Entry, { kind: 'chat' }>
+        const who = entry.from === HUMAN ? 'operator' : `@${entry.from}`
+        return `- ${who}: ${entry.text.replace(/\s+/g, ' ').slice(0, 200)}`
+      })
+
+    return [
+      'Your configuration was just updated by the operator, which restarted your session.',
+      'You do not have your previous context, so here is where things stood.',
+      recent.length > 0 ? `\nYour recent thread with the operator:\n${recent.join('\n')}` : '',
+      group.length > 0 ? `\nRecent groupchat:\n${group.join('\n')}` : '',
+      '\nCheck your workspace for uncommitted work before starting anything new, and read the groupchat if you need more.',
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
+
   /** Handle a line the operator typed in `tabId`. */
   submit(tabId: string, text: string): void {
     const body = text.trim()
@@ -324,6 +445,7 @@ export class Squad extends EventEmitter {
       branch: workspace.branch,
       resumeSessionId: this.state.agents[profile.name]?.sessionId,
       priorCostUsd: this.state.agents[profile.name]?.costUsd,
+      primer: this.primers.get(profile.name),
       capabilityServers: equipment.servers,
       capabilityTools: equipment.tools,
       capabilitySkills: equipment.skills,

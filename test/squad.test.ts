@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { Squad, GROUP_TAB, NEW_TAB } from '../src/squad.js'
 import { draftToProfile } from '../src/draft.js'
 import { emptyDraft } from '../src/ui/AgentForm.js'
-import { saveState } from '../src/state.js'
+import { saveState, loadState } from '../src/state.js'
 
 const run = promisify(execFile)
 
@@ -121,4 +121,81 @@ test('a persisted session id is handed to the agent for resume', async () => {
   // Lifetime cost carries forward even though a resumed session reports from zero.
   assert.equal(second.costOf('engineer'), 2.5)
   await second.shutdown()
+})
+
+
+test('a cosmetic edit applies without restarting the session', async () => {
+  const repo = await scratchRepo()
+  const squad = await Squad.create(repo)
+  await squad.addAgent(profile('engineer', 'Writes code'))
+  await saveState(path.join(repo, '.squad'), {
+    version: 1,
+    agents: { engineer: { sessionId: 'sess-keep', costUsd: 1 } },
+  })
+
+  const reopened = await Squad.create(repo)
+  const before = reopened.profiles().find(p => p.name === 'engineer')!
+  const { restarted } = await reopened.updateAgent({ ...before, displayName: 'Eng', color: 'red' })
+
+  assert.equal(restarted, false, 'renaming the tab should not cost the conversation')
+  assert.equal(reopened.tabs.find(t => t.id === 'engineer')!.label, 'Eng')
+  // The session is still the one it was resumed from.
+  assert.equal((await loadState(path.join(repo, '.squad'))).agents.engineer?.sessionId, 'sess-keep')
+  await reopened.shutdown()
+})
+
+test('changing instructions or capabilities forces a fresh session', async () => {
+  const repo = await scratchRepo()
+  const first = await Squad.create(repo)
+  await first.addAgent(profile('engineer'))
+  await first.shutdown()
+
+  await saveState(path.join(repo, '.squad'), {
+    version: 1,
+    agents: { engineer: { sessionId: 'sess-old', costUsd: 3.5 } },
+  })
+
+  const squad = await Squad.create(repo)
+  const before = squad.profiles().find(p => p.name === 'engineer')!
+  const { restarted } = await squad.updateAgent({
+    ...before,
+    instructions: 'You are the engineer. Completely new instructions this time.',
+    capabilities: ['research'],
+  })
+
+  assert.equal(restarted, true)
+  const state = await loadState(path.join(repo, '.squad'))
+  // A resumed session keeps the system prompt it started with, so the old one must be
+  // dropped for new instructions to take effect.
+  assert.equal(state.agents.engineer?.sessionId, undefined)
+  // Lifetime spend still carries across the restart.
+  assert.equal(squad.costOf('engineer'), 3.5)
+  await squad.shutdown()
+})
+
+test('an edit is written back to the profile on disk', async () => {
+  const repo = await scratchRepo()
+  const squad = await Squad.create(repo)
+  await squad.addAgent(profile('engineer'))
+
+  const before = squad.profiles().find(p => p.name === 'engineer')!
+  await squad.updateAgent({ ...before, role: 'Now does QA', capabilities: ['research', 'github'] })
+
+  const written = await fs.readFile(path.join(repo, '.squad', 'agents', 'engineer.md'), 'utf8')
+  assert.match(written, /role: Now does QA/)
+  assert.match(written, /capabilities: \[research, github\]/)
+
+  // And it survives a relaunch.
+  await squad.shutdown()
+  const reopened = await Squad.create(repo)
+  const after = reopened.profiles().find(p => p.name === 'engineer')!
+  assert.deepEqual(after.capabilities, ['research', 'github'])
+  assert.equal(after.role, 'Now does QA')
+  await reopened.shutdown()
+})
+
+test('editing an agent that is not on the squad is refused', async () => {
+  const squad = await Squad.create(await scratchRepo())
+  await assert.rejects(squad.updateAgent(profile('ghost')), /not on the squad/)
+  await squad.shutdown()
 })

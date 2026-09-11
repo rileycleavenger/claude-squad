@@ -1,15 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Text, useApp, useInput, useStdout, type Key } from 'ink'
 import { GROUP_TAB, NEW_TAB, describeStatus, type Squad } from '../squad.js'
 import { Transcript } from './Transcript.js'
-import { AgentForm, FIELDS, emptyDraft, initialNewAgentState, type NewAgentState } from './AgentForm.js'
+import {
+  AgentForm,
+  editableFields,
+  emptyDraft,
+  initialNewAgentState,
+  type NewAgentState,
+} from './AgentForm.js'
 import { listTemplates, type Template } from '../library.js'
 import { draftToProfile, profileToDraft } from '../draft.js'
-import type { AgentStatus } from '../types.js'
+import type { AgentProfile, AgentStatus } from '../types.js'
 
 const HELP = [
   '← →            switch tabs (Tab also works)',
   '↑ ↓            input history (field / list in the + tab)',
+  '^E              edit the current agent\u2019s configuration',
   '^K              interrupt the current agent',
   '/status         every agent’s state, branch and session',
   '/cost           spend per agent',
@@ -56,6 +63,10 @@ export function App({ squad }: { squad: Squad }) {
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState<number | undefined>(undefined)
   const [newAgent, setNewAgent] = useState<NewAgentState>(initialNewAgentState)
+  const [editing, setEditing] = useState<string | undefined>(undefined)
+  // The half-written new agent is kept aside while editing an existing one, so opening
+  // an editor never throws away a draft.
+  const stashed = useRef<NewAgentState | undefined>(undefined)
   const [templates, setTemplates] = useState<Template[]>([])
   const capabilities = useMemo(() => squad.availableCapabilities(), [squad])
   const [, forceRender] = useState(0)
@@ -76,6 +87,8 @@ export function App({ squad }: { squad: Squad }) {
   const activeIndex = Math.max(0, tabs.findIndex(t => t.id === activeId))
   const current = tabs[activeIndex]!
   const isNewTab = current.kind === 'new'
+  const isEditing = editing !== undefined && editing === current.id
+  const showingForm = isNewTab || isEditing
 
   useEffect(() => {
     squad.markSeen(current.id)
@@ -98,6 +111,30 @@ export function App({ squad }: { squad: Squad }) {
     (name: string) => squad.profiles().find(a => a.name === name)?.color ?? 'white',
     [squad],
   )
+
+  const startEditing = useCallback(
+    (profile: AgentProfile) => {
+      stashed.current = newAgent
+      setNewAgent({
+        phase: 'form',
+        mode: 'edit',
+        pickerIndex: 0,
+        fieldIndex: 0,
+        capIndex: 0,
+        capabilities: [...profile.capabilities],
+        draft: profileToDraft(profile),
+        saveToLibrary: false,
+      })
+      setEditing(profile.name)
+    },
+    [newAgent],
+  )
+
+  const stopEditing = useCallback(() => {
+    setNewAgent(stashed.current ?? initialNewAgentState())
+    stashed.current = undefined
+    setEditing(undefined)
+  }, [])
 
   const quit = useCallback(async () => {
     setExiting(true)
@@ -173,12 +210,29 @@ export function App({ squad }: { squad: Squad }) {
     [squad, current, quit],
   )
 
-  const saveNewAgent = useCallback(() => {
+  const submitForm = useCallback(() => {
     const { profile, error } = draftToProfile(newAgent.draft, squad.profiles().length, newAgent.capabilities)
     if (error || !profile) {
       setNewAgent(prev => ({ ...prev, error }))
       return
     }
+
+    if (newAgent.mode === 'edit') {
+      setNewAgent(prev => ({ ...prev, busy: true, error: undefined }))
+      void squad
+        .updateAgent(profile)
+        .then(({ restarted }) => {
+          stopEditing()
+          setNotice(
+            restarted
+              ? `@${profile.name} updated. Its session restarted so the new setup applies; it was handed a summary of what it was doing.`
+              : `@${profile.name} updated. No restart was needed.`,
+          )
+        })
+        .catch((err: Error) => setNewAgent(prev => ({ ...prev, busy: false, error: err.message })))
+      return
+    }
+
     if (squad.hasAgent(profile.name)) {
       setNewAgent(prev => ({ ...prev, error: `@${profile.name} is already on the squad.` }))
       return
@@ -196,9 +250,9 @@ export function App({ squad }: { squad: Squad }) {
       .catch((err: Error) => {
         setNewAgent(prev => ({ ...prev, busy: false, error: err.message }))
       })
-  }, [newAgent, squad, refreshTemplates])
+  }, [newAgent, squad, refreshTemplates, stopEditing])
 
-  const handleNewTabKey = useCallback(
+  const handleFormKey = useCallback(
     (input: string, key: Key) => {
       if (newAgent.busy) return
 
@@ -216,6 +270,7 @@ export function App({ squad }: { squad: Squad }) {
           const template = newAgent.pickerIndex === 0 ? undefined : templates[newAgent.pickerIndex - 1]
           setNewAgent({
             phase: 'form',
+            mode: 'new',
             pickerIndex: newAgent.pickerIndex,
             fieldIndex: 0,
             capIndex: 0,
@@ -234,7 +289,7 @@ export function App({ squad }: { squad: Squad }) {
           return
         }
         if (key.ctrl && input === 's') {
-          saveNewAgent()
+          submitForm()
           return
         }
         if (key.upArrow) {
@@ -264,11 +319,12 @@ export function App({ squad }: { squad: Squad }) {
         return
       }
       if (key.escape) {
-        setNewAgent(prev => ({ ...prev, phase: 'picker', error: undefined }))
+        if (newAgent.mode === 'edit') setEditing(undefined)
+        else setNewAgent(prev => ({ ...prev, phase: 'picker', error: undefined }))
         return
       }
       if (key.ctrl && input === 's') {
-        saveNewAgent()
+        submitForm()
         return
       }
       if (key.ctrl && input === 'l') {
@@ -276,22 +332,29 @@ export function App({ squad }: { squad: Squad }) {
         return
       }
       if (key.upArrow) {
-        setNewAgent(prev => ({ ...prev, fieldIndex: (prev.fieldIndex - 1 + FIELDS.length) % FIELDS.length }))
+        const n = editableFields(newAgent.mode).length
+        setNewAgent(prev => ({ ...prev, fieldIndex: (prev.fieldIndex - 1 + n) % n }))
         return
       }
       if (key.downArrow) {
-        setNewAgent(prev => ({ ...prev, fieldIndex: (prev.fieldIndex + 1) % FIELDS.length }))
+        const n = editableFields(newAgent.mode).length
+        setNewAgent(prev => ({ ...prev, fieldIndex: (prev.fieldIndex + 1) % n }))
         return
       }
 
-      const field = FIELDS[newAgent.fieldIndex]!
+      const fields = editableFields(newAgent.mode)
+      const field = fields[newAgent.fieldIndex]!
       const edit = (fn: (value: string) => string) =>
         setNewAgent(prev => ({ ...prev, draft: { ...prev.draft, [field]: fn(prev.draft[field]) }, error: undefined }))
 
       if (key.return) {
         // Enter writes a newline in the prompt body; elsewhere it just advances.
         if (field === 'instructions') edit(v => v + '\n')
-        else setNewAgent(prev => ({ ...prev, fieldIndex: Math.min(prev.fieldIndex + 1, FIELDS.length - 1) }))
+        else
+          setNewAgent(prev => ({
+            ...prev,
+            fieldIndex: Math.min(prev.fieldIndex + 1, editableFields(prev.mode).length - 1),
+          }))
         return
       }
       if (key.backspace || key.delete) {
@@ -301,7 +364,7 @@ export function App({ squad }: { squad: Squad }) {
       if (key.ctrl || key.meta || key.tab) return
       if (input) edit(v => v + input)
     },
-    [newAgent, templates, capabilities, saveNewAgent],
+    [newAgent, templates, capabilities, submitForm],
   )
 
   useInput((input, key) => {
@@ -332,8 +395,14 @@ export function App({ squad }: { squad: Squad }) {
       return
     }
 
-    if (isNewTab) {
-      handleNewTabKey(input, key)
+    if (showingForm) {
+      handleFormKey(input, key)
+      return
+    }
+
+    // ^E on an agent tab opens that agent's configuration.
+    if (key.ctrl && input === 'e') {
+      if (current.agent) startEditing(current.agent)
       return
     }
 
@@ -409,11 +478,11 @@ export function App({ squad }: { squad: Squad }) {
       <Box
         flexDirection="column"
         borderStyle="round"
-        borderColor={isNewTab ? 'cyan' : 'gray'}
+        borderColor={showingForm ? 'cyan' : 'gray'}
         height={paneHeight + 2}
         overflow="hidden"
       >
-        {isNewTab ? (
+        {showingForm ? (
           <AgentForm state={newAgent} templates={templates} capabilities={capabilities} />
         ) : (
           <Transcript
@@ -431,7 +500,7 @@ export function App({ squad }: { squad: Squad }) {
         </Box>
       ) : null}
 
-      {isNewTab ? null : (
+      {showingForm ? null : (
         <Box>
           <Text color="cyan">{current.id === GROUP_TAB ? '#groupchat ' : `@${current.id} `}</Text>
           <Text>&gt; </Text>

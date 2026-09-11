@@ -36,6 +36,12 @@ export interface RunnerDeps {
   secrets?: string[]
   /** `name - description` for each capability, for the agent's system prompt. */
   capabilityDescriptions?: Array<{ name: string; description: string }>
+  /**
+   * Context to fold into the first message this agent receives. Used when an agent is
+   * reconfigured: its session has to start fresh for new instructions to take effect, so
+   * this catches it up without costing a turn of its own.
+   */
+  primer?: string
 }
 
 /**
@@ -59,6 +65,7 @@ export class AgentRunner extends EventEmitter {
   private ready = false
   private sessionId: string | undefined
   private ourServerNames = new Set<string>()
+  private primer: string | undefined
   /** Timestamps of recent automatic unread flushes, used to damp agent-to-agent loops. */
   private flushes: number[] = []
 
@@ -68,6 +75,7 @@ export class AgentRunner extends EventEmitter {
     this.name = deps.profile.name
     this.profile = deps.profile
     this.priorCostUsd = deps.priorCostUsd ?? 0
+    this.primer = deps.primer
   }
 
   getStatus(): AgentStatus {
@@ -145,9 +153,26 @@ export class AgentRunner extends EventEmitter {
 
   /** Queue a user turn for this agent. */
   send(text: string): void {
-    this.queue.push(text)
+    if (this.primer) {
+      // Fold the catch-up into the first real message rather than sending it on its own,
+      // so reconfiguring an agent does not burn a turn.
+      this.queue.push(`${this.primer}\n\n---\n\n${text}`)
+      this.primer = undefined
+    } else {
+      this.queue.push(text)
+    }
     if (this.status.kind === 'idle' || this.status.kind === 'starting') {
       this.setStatus({ kind: 'thinking' })
+    }
+  }
+
+  /** Change the model for subsequent turns without restarting the session. */
+  async setModel(model: string | undefined): Promise<void> {
+    try {
+      await this.session?.setModel(model)
+    } catch {
+      // Only available in streaming mode and only once the session is up; a failure here
+      // just means the change lands on the next restart.
     }
   }
 

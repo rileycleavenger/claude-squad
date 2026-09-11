@@ -66,6 +66,7 @@ key instead.
 | `←` `→` | switch tabs (`Tab` / `Shift+Tab` also work) |
 | `↑` `↓` | input history; moves the selection in the `+` tab |
 | `Enter` | send |
+| `^E` | edit the current agent's configuration |
 | `^K` | interrupt the current tab's agent |
 | `^C` | shut the squad down |
 
@@ -185,6 +186,22 @@ interactive auth. Log in once by hand and hand the agent the result:
 
 Pair that with `notify` so a blocked agent can reach you instead of idling silently.
 
+## Editing an agent
+
+Press `^E` on an agent's tab to open its configuration, pre-filled. Change anything,
+`^E` again for its capabilities, `^S` to apply, `Esc` to cancel.
+
+The handle is fixed once an agent exists — it is also its branch name, its worktree
+directory, and the `@mention` its teammates already use.
+
+**What happens to the conversation:** cosmetic changes (display name, colour, model) apply
+in place and the conversation carries on untouched. Changing instructions, role,
+capabilities, effort or budget needs a **fresh session** — a resumed session keeps the
+system prompt it started with, so there is no way to change those in place. Rather than
+silently not applying your edit, claude-squad restarts the agent and hands it a summary of
+what it was doing, assembled from its own transcript. The transcript on screen is not
+cleared; only the agent's own context restarts, and its lifetime cost carries over.
+
 ## Picking up where you left off
 
 Relaunching a squad in a project restores:
@@ -266,6 +283,7 @@ npm test              # routing, config, capabilities, secrets, persistence (no 
 npm run smoke         # one real agent: proves session continuity and worktree writes
 npm run integration   # two real agents: groupchat, @mention handoff, worktree isolation
 npm run capabilities  # one real agent driving a real browser through the browser capability
+npm run reconfig      # edits a live agent and proves the new instructions take effect
 ```
 
 `smoke` and `integration` call the API. They default to `claude-haiku-4-5` since they
