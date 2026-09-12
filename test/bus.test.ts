@@ -8,10 +8,14 @@ interface Captured {
   received: string[]
 }
 
-function makeBus(agents: string[], opts?: { maxWakesPerMinute?: number; maxRelayDepth?: number }) {
+function makeBus(
+  agents: string[],
+  opts?: { maxWakesPerMinute?: number; maxRelayDepth?: number; chainIdleMs?: number },
+) {
   const bus = new MessageBus({
     maxWakesPerMinute: opts?.maxWakesPerMinute ?? 6,
     maxRelayDepth: opts?.maxRelayDepth ?? 8,
+    chainIdleMs: opts?.chainIdleMs,
   })
   const captured = new Map<string, Captured>()
   for (const name of agents) {
@@ -70,7 +74,10 @@ test('agent wakes are rate limited, operator wakes are not', () => {
     bus.post({ from: 'architect', channel: 'group', text: `ping ${i}`, mentions: ['engineer'] })
   }
   assert.equal(captured.get('engineer')!.received.length, 2, 'only 2 agent wakes should land')
-  assert.equal(suppressed.length, 3)
+  assert.equal(bus.unreadCount('engineer'), 3, 'the held-back mentions are still delivered as unread')
+  // The notice is announced at most once a minute per agent; one line per held-back
+  // mention buried the groupchat.
+  assert.equal(suppressed.length, 1)
   assert.ok(suppressed.every(r => r === 'rate-limit'))
 
   bus.post({ from: HUMAN, channel: 'group', text: '@engineer stop what you are doing' })
@@ -114,4 +121,42 @@ test('wait_for_messages gives up after its timeout', async () => {
   await bus.waitForMessage('engineer', 60)
   assert.ok(Date.now() - started >= 50)
   bus.close()
+})
+
+
+test('a relay chain restarts after a quiet gap instead of gagging an agent forever', () => {
+  // The depth used to climb on every post an agent made and never come back down, so a
+  // busy agent's mentions were suppressed permanently after maxRelayDepth posts.
+  const { bus, captured } = makeBus(['a', 'b'], { maxWakesPerMinute: 1000, maxRelayDepth: 3, chainIdleMs: 0 })
+  for (let i = 0; i < 12; i++) {
+    bus.post({ from: 'a', channel: 'group', text: `update ${i}`, mentions: ['b'] })
+  }
+  assert.equal(
+    captured.get('b')!.received.length,
+    12,
+    'separated posts are new chains, so none of them should be held back',
+  )
+})
+
+test('a tight back-and-forth is still cut off', () => {
+  const { bus, captured } = makeBus(['a', 'b'], { maxWakesPerMinute: 1000, maxRelayDepth: 3 })
+  bus.post({ from: 'a', channel: 'group', text: 'hi b', mentions: ['b'] })
+  for (let i = 0; i < 10; i++) {
+    const from = i % 2 === 0 ? 'b' : 'a'
+    const to = i % 2 === 0 ? 'a' : 'b'
+    bus.post({ from, channel: 'group', text: `hop ${i}`, mentions: [to] })
+  }
+  const delivered = captured.get('a')!.received.length + captured.get('b')!.received.length
+  assert.ok(delivered <= 4, `the chain should stop by depth 3, got ${delivered}`)
+})
+
+test('an operator message always starts a fresh chain', () => {
+  const { bus, captured } = makeBus(['a', 'b'], { maxWakesPerMinute: 1000, maxRelayDepth: 2 })
+  for (let i = 0; i < 6; i++) {
+    const from = i % 2 === 0 ? 'a' : 'b'
+    bus.post({ from, channel: 'group', text: `hop ${i}`, mentions: [from === 'a' ? 'b' : 'a'] })
+  }
+  const before = captured.get('a')!.received.length
+  bus.post({ from: HUMAN, channel: 'group', text: '@a carry on' })
+  assert.equal(captured.get('a')!.received.length, before + 1)
 })

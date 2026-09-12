@@ -10,6 +10,7 @@ import type { AgentProfile, AgentStatus, Entry, SquadConfig } from './types.js'
 import { summarizeToolUse } from './toolsummary.js'
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { redact } from './secrets.js'
+import { usageLimit } from './usage.js'
 
 export interface RunnerDeps {
   profile: AgentProfile
@@ -233,6 +234,15 @@ export class AgentRunner extends EventEmitter {
         if (message.parent_tool_use_id) return
         for (const block of message.message.content) {
           if (block.type === 'text' && block.text.trim()) {
+            // A quota notice comes back through the assistant channel, so it would
+            // otherwise render as something the agent said while its status stayed
+            // healthy - the squad stops working and nothing on screen explains it.
+            const limit = usageLimit(block.text)
+            if (limit) {
+              this.emitEntry({ kind: 'error', text: limit })
+              this.setStatus({ kind: 'error', message: 'usage limit' })
+              continue
+            }
             this.emitEntry({ kind: 'chat', text: block.text.trim() })
             this.setStatus({ kind: 'thinking' })
           } else if (block.type === 'tool_use') {

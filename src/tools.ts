@@ -37,9 +37,14 @@ export function buildSquadServer(me: string, bus: MessageBus, directory: SquadDi
 
   const postToGroupchat = tool(
     'post_to_groupchat',
-    'Post a message to the squad groupchat, visible to every teammate and to the human operator. Set `mentions` to interrupt specific teammates now; leave it empty to inform the squad without interrupting anyone.',
+    'Post to the squad groupchat. Use this ONLY for something that changes what a teammate does: a decision they must build against, a handoff, a blocker, a question only they can answer, or a change to something shared. NOT for progress updates, phase announcements, implementation detail, test results or summaries of your work - those belong in your reply to the operator, which teammates do not pay for. Two or three sentences; if it needs more, write a file and post the path. Set `mentions` to interrupt specific teammates now; leave it empty to inform without interrupting.',
     {
-      text: z.string().min(1).describe('The message. Keep it to a few sentences.'),
+      text: z
+        .string()
+        .min(1)
+        .describe(
+          'The message, in two or three plain sentences. No headings or bullet lists - this is a chat message read by several agents, not a status report.',
+        ),
       mentions: z
         .array(z.string())
         .optional()

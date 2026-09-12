@@ -590,7 +590,9 @@ export function App({ squad }: { squad: Squad }) {
             entries={squad.entries(current.id)}
             colorOf={colorOf}
             height={paneHeight}
-            width={(stdout?.columns ?? 80) - 2}
+            width={columns - 2}
+            // Only the groupchat mixes speakers; a one-to-one agent tab reads fine without gaps.
+            speakerGap={current.id === GROUP_TAB ? 3 : 0}
           />
         )}
       </Box>

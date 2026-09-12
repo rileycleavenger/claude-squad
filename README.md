@@ -74,6 +74,30 @@ key instead.
 Typing in `#groupchat` addresses the whole team. Typing in an agent's tab is a private
 message to just that agent. Each tab keeps its own unsent draft.
 
+### What belongs in the groupchat
+
+The two kinds of tab carry different traffic, and agents are told so in their system
+prompt. An agent's **own tab** is where its work shows up in full - every message, every
+tool call, as much detail as it wants, for you. **`#groupchat` is for teammates**, and an
+agent posts there only when something changes what another agent should do: a decision
+others must build against, a handoff, a blocker that affects someone else, a question only
+a teammate can answer, or a change to something shared.
+
+What does *not* go there is progress narration - "starting phase 2", "tests passing",
+file lists, implementation detail. Left unchecked that buries the coordination you
+actually need to read in a scroll of status updates. Posts are meant to be two or three
+sentences; the detail is a tab away.
+
+The pane is rendered to match. `**bold**` and `` `code` `` are drawn as bold and as cyan
+rather than printed as literal markers, and when the speaker changes there are three blank
+lines before the new voice, so a handoff between agents is visible at a glance instead of
+being one more line in a wall of text.
+
+If an agent relays into the groupchat repeatedly without anyone else weighing in, the
+squad stops waking teammates for it and says so once. That chain decays after 90 seconds
+of quiet, so a genuine second round of coordination still gets through - it only suppresses
+a live ping-pong. Anything *you* post always bypasses it.
+
 Tabs are clickable. claude-squad runs on the terminal's alternate screen so that click
 coordinates line up with what's drawn, which also means it restores your scrollback
 untouched when it exits. Two consequences worth knowing: the transcript leaves the screen

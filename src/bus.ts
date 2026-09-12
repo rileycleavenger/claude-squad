@@ -22,6 +22,13 @@ export interface PostInput {
 export interface BusOptions {
   maxWakesPerMinute: number
   maxRelayDepth: number
+  /**
+   * How long a relay chain stays "the same conversation". A runaway ping-pong happens in
+   * seconds; real collaboration has gaps. After this much quiet an agent starts a fresh
+   * chain, so a long-running squad is never permanently gagged. Defaults to 90s; 0
+   * treats every post as a new chain, disabling the depth guard.
+   */
+  chainIdleMs?: number
   /** Path to append the message log to, for post-hoc review. */
   historyPath?: string
 }
@@ -55,6 +62,10 @@ export class MessageBus extends EventEmitter {
   private readonly wakeTimes = new Map<string, number[]>()
   /** Relay depth of the last message delivered to each agent; their posts inherit depth+1. */
   private readonly depthOf = new Map<string, number>()
+  /** When each agent's chain last advanced, so a stale chain can start over. */
+  private readonly chainAt = new Map<string, number>()
+  /** Last time a suppression was announced for an agent, to keep the groupchat readable. */
+  private readonly suppressionNotedAt = new Map<string, number>()
   private readonly waiters = new Map<string, Array<() => void>>()
   private readonly log: SquadMessage[] = []
   private history: WriteStream | undefined
@@ -85,7 +96,12 @@ export class MessageBus extends EventEmitter {
   /** Post a message and route it. Returns the stored message. */
   post(input: PostInput): SquadMessage {
     const fromHuman = input.from === HUMAN
-    const inherited = fromHuman ? -1 : (this.depthOf.get(input.from) ?? 0)
+    // A chain that has gone quiet is over. Without this the depth only ever climbs - it
+    // counts an agent's posts rather than the length of a back-and-forth - and every
+    // mention from a busy agent ends up suppressed forever.
+    const idleMs = this.options.chainIdleMs ?? 90_000
+    const stale = Date.now() - (this.chainAt.get(input.from) ?? 0) >= idleMs
+    const inherited = fromHuman || stale ? -1 : (this.depthOf.get(input.from) ?? 0)
 
     const mentions = new Set<string>(extractMentions(input.text))
     for (const m of input.mentions ?? []) mentions.add(m.replace(/^@/, '').toLowerCase())
@@ -104,7 +120,10 @@ export class MessageBus extends EventEmitter {
 
     // Advance the sender's own chain depth here rather than on delivery: a hop that gets
     // suppressed must still count, or a blocked ping-pong simply resets and runs forever.
-    if (!fromHuman) this.depthOf.set(input.from, message.relayDepth)
+    if (!fromHuman) {
+      this.depthOf.set(input.from, message.relayDepth)
+      this.chainAt.set(input.from, message.ts)
+    }
 
     this.log.push(message)
     this.history?.write(JSON.stringify(message) + '\n')
@@ -134,12 +153,19 @@ export class MessageBus extends EventEmitter {
       const suppression = fromHuman ? undefined : this.suppressionFor(name, message)
       if (suppression) {
         this.queueUnread(name, message)
-        this.emit('suppressed', { agent: name, message, reason: suppression })
+        // Announce at most once a minute per agent: one notice per held-back mention
+        // turned the groupchat into a wall of them.
+        const lastNoted = this.suppressionNotedAt.get(name) ?? 0
+        if (message.ts - lastNoted > 60_000) {
+          this.suppressionNotedAt.set(name, message.ts)
+          this.emit('suppressed', { agent: name, message, reason: suppression })
+        }
         continue
       }
 
       if (!fromHuman) this.noteWake(name)
       this.depthOf.set(name, message.relayDepth)
+      this.chainAt.set(name, message.ts)
       sub.deliver(renderForAgent(message))
     }
   }
@@ -182,6 +208,7 @@ export class MessageBus extends EventEmitter {
   /** Reset an agent's relay depth, so work it starts next is treated as a fresh chain. */
   resetDepth(name: string): void {
     this.depthOf.set(name, 0)
+    this.chainAt.delete(name)
   }
 
   /**
