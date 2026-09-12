@@ -8,6 +8,7 @@ import {
   loadCapabilities,
   materializeServers,
   parseCapability,
+  resolveHooks,
   skillNameFor,
 } from '../src/capability.js'
 import { writeCapabilityPlugin, pluginPath } from '../src/plugin.js'
@@ -24,13 +25,55 @@ test('built-in capabilities all parse and declare what they need', async () => {
   const caps = await loadCapabilities('/nonexistent')
   assert.deepEqual(
     [...caps.keys()].sort(),
-    ['browser', 'chrome-devtools', 'email', 'github', 'notify', 'research'],
+    ['browser', 'chrome-devtools', 'context', 'email', 'github', 'notify', 'research'],
   )
   for (const [name, c] of caps) {
     assert.ok(c.description.length > 10, `${name} needs a real description`)
     assert.ok(c.instructions.length > 200, `${name} needs real technique content`)
-    assert.ok(c.allowedTools.length > 0, `${name} should pre-approve some tools`)
+    // A capability has to actually bring something. Most bring tools; `context` brings
+    // only hooks, which is a legitimate shape - it changes what the agent may do rather
+    // than what it can do.
+    const brings = c.allowedTools.length + Object.keys(c.mcpServers).length + c.hooks.length
+    assert.ok(brings > 0, `${name} should bring tools, servers or hooks`)
   }
+})
+
+test('a capability hook binds to the installed command, keeping its own event and matcher', async () => {
+  const context = (await loadCapabilities('/nonexistent')).get('context')!
+  const registered = [
+    { event: 'PreToolUse', matcher: 'Read', command: '/opt/shunt/hooks/check-file-size', args: [] },
+    // Deliberately mis-bound in the user's settings: the capability's own matcher must
+    // win, so a hook cannot be silently rebound to a different tool by an edit elsewhere.
+    { event: 'PostToolUse', matcher: 'Write', command: '/opt/shunt/hooks/check-bash-read', args: ['--dialect=codex'] },
+  ]
+
+  const { hooks, warnings } = resolveHooks(context, registered)
+  assert.deepEqual(warnings, [])
+  assert.deepEqual(hooks, [
+    { event: 'PreToolUse', matcher: 'Read', command: '/opt/shunt/hooks/check-file-size', args: [], timeout: undefined },
+    {
+      event: 'PreToolUse',
+      matcher: 'Bash',
+      command: '/opt/shunt/hooks/check-bash-read',
+      args: ['--dialect=codex'],
+      timeout: undefined,
+    },
+  ])
+})
+
+test('an uninstalled hook warns loudly rather than silently not blocking', async () => {
+  // Silence here would be the worst outcome: the agent would look equipped while the hard
+  // block - the entire point of the capability - was not in force.
+  const context = (await loadCapabilities('/nonexistent')).get('context')!
+  const { hooks, warnings } = resolveHooks(context, [])
+  assert.deepEqual(hooks, [])
+  // One warning covering both hooks, not one per hook: four default profiles all want
+  // this capability, and eight lines of the same complaint would bury the boot output.
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0]!, /check-file-size/)
+  assert.match(warnings[0]!, /check-bash-read/)
+  assert.match(warnings[0]!, /not installed/)
+  assert.match(warnings[0]!, /shunt/, 'says how to get it')
 })
 
 test('a project capability overrides a built-in of the same name', async () => {

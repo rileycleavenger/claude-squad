@@ -327,4 +327,84 @@ Always post the same thing to the groupchat as well, so there is a record in the
 transcript where the rest of the squad can see it.
 `,
   },
+  {
+    name: 'context',
+    content: `---
+name: context
+description: Keep big files out of your context - large reads are blocked and delegated to a cheap worker model
+requires: Needs shunt installed (github.com/spotify/portal-ai-plugins, or a local port) so that its check-file-size and check-bash-read hooks are registered in ~/.claude/settings.json and bulk-read / code-write are on PATH.
+hooks:
+  PreToolUse:
+    - matcher: Read
+      command: check-file-size
+    - matcher: Bash
+      command: check-bash-read
+---
+
+# Working without filling your context
+
+Large file reads are **blocked**, not discouraged. When you try to read a file over the
+threshold you get a denial telling you to delegate it. This is deliberate: reading a
+2,000-line file to answer one question about it spends your whole context on lines you
+will never refer to again, and you cannot get that space back.
+
+This matters more in a squad than it would alone. Several of you are working at once, and
+each agent fills its own context independently - four agents reading at full size means
+four windows to compact, four times the re-reading, and four agents that get vaguer as the
+session goes on.
+
+## Reading
+
+\`\`\`bash
+bulk-read --question "<what you actually need to know>" --paths <file> [<file> ...]
+\`\`\`
+
+The files go to a cheap worker model and you get bullets back. The file contents never
+enter your context at all, so asking again with the same \`--paths\` costs you nothing -
+and a repeat with unchanged files is served from cache, instantly and free.
+
+Ask a **specific question**. "What does this service do?" gets you a summary you will have
+to follow up on; "Which functions write to the orders table, and what do they validate
+first?" gets you the answer. You are paying for the worker's reading either way - the
+question is whether you get something usable back.
+
+Two ways through the block that are not delegation, both legitimate:
+
+- **A targeted read is never blocked.** \`Read\` with \`offset\`/\`limit\` goes straight
+  through. When you know the region you want, take it directly.
+- **Grep first.** Finding the six relevant lines and reading around them beats
+  summarising the file. The block is on reading *everything*, not on reading.
+
+Before you edit based on something a worker told you, **re-read that region directly** with
+offset/limit. A summary is good enough to decide what to change and not good enough to
+base an exact edit on.
+
+## Writing
+
+\`\`\`bash
+code-write --spec "<what to generate>" --reference <file-to-match> --target <output-path>
+\`\`\`
+
+For work that is mostly predictable from an existing file - tests, config, type stubs,
+docstrings, another handler in the same shape as five others. With \`--target\` the
+generated code goes straight to disk and never passes through your context, which is where
+the saving comes from.
+
+\`--reference\` is required, and it is what makes the output fit: without a file whose
+patterns to match you get generic code that matches nothing in the project. Then read the
+result and make surgical edits for the part that needed your judgement rather than the
+worker's - that last 5-20% is the job.
+
+## What not to do
+
+Do not fight the block. If a read is denied, do not cat the file in Bash, split it with
+\`sed\`, or read it in four offset chunks to get the whole thing anyway - the Bash route is
+blocked too, and the chunked route just spends the context more slowly. The block is
+telling you the file is not worth its cost in full; answer the question you actually have.
+
+Do not delegate what is already cheap. Small files, a file you are about to edit line by
+line, or a file you have already read are all fine to read directly. Delegation has its own
+latency, and using it on a 40-line config is slower and no cheaper.
+`,
+  },
 ]

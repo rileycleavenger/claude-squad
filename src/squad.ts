@@ -9,7 +9,15 @@ import { loadConfig, writeProfile } from './config.js'
 import { saveToLibrary } from './library.js'
 import { loadState, saveState, TranscriptLog, type SquadState } from './state.js'
 import { ensureWorktree, provisionWorkspaces, type Workspace } from './worktree.js'
-import { loadCapabilities, materializeServers, skillNameFor, type Capability } from './capability.js'
+import {
+  loadCapabilities,
+  materializeServers,
+  resolveHooks,
+  skillNameFor,
+  type Capability,
+  type ResolvedHook,
+} from './capability.js'
+import { loadUserHooks, type RegisteredHook } from './hooks.js'
 import { writeCapabilityPlugin, pluginPath } from './plugin.js'
 import type { AgentProfile, AgentStatus, Entry, SquadConfig, SquadMessage } from './types.js'
 import { HUMAN, TEAM } from './types.js'
@@ -398,7 +406,15 @@ export class Squad extends EventEmitter {
     const tools: string[] = []
     const skills: string[] = []
     const secrets: string[] = []
+    const hooks: ResolvedHook[] = []
     const descriptions: Array<{ name: string; description: string }> = []
+
+    // Read fresh rather than cached, so installing a hook and then adding an agent works
+    // without relaunching the squad.
+    let registered: RegisteredHook[] = []
+    if (profile.capabilities.some(name => this.capabilities.get(name)?.hooks.length)) {
+      registered = await loadUserHooks()
+    }
 
     for (const name of profile.capabilities) {
       const capability = this.capabilities.get(name)
@@ -411,6 +427,12 @@ export class Squad extends EventEmitter {
       descriptions.push({ name: capability.name, description: capability.description })
       skills.push(skillNameFor(capability.name))
       tools.push(...capability.allowedTools)
+      const resolved = resolveHooks(capability, registered)
+      hooks.push(...resolved.hooks)
+      // Every profile can want the same capability, so say it once for the squad.
+      for (const warning of resolved.warnings) {
+        if (!this.warnings.includes(warning)) this.warnings.push(warning)
+      }
       try {
         const result = await materializeServers(capability, {
           agentName: profile.name,
@@ -427,7 +449,7 @@ export class Squad extends EventEmitter {
       }
     }
 
-    return { servers, tools, skills, secrets, descriptions, agentDir }
+    return { servers, tools, skills, secrets, hooks, descriptions, agentDir }
   }
 
   private async createRunner(profile: AgentProfile): Promise<AgentRunner> {
@@ -449,6 +471,7 @@ export class Squad extends EventEmitter {
       capabilityServers: equipment.servers,
       capabilityTools: equipment.tools,
       capabilitySkills: equipment.skills,
+      capabilityHooks: equipment.hooks,
       capabilityDescriptions: equipment.descriptions,
       pluginPath: pluginPath(this.config.squadDir),
       secrets: equipment.secrets,

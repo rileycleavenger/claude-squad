@@ -4,6 +4,7 @@ import matter from 'gray-matter'
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { BUILTIN_CAPABILITIES } from './capabilities/builtin.js'
 import { resolveSecretsIn } from './secrets.js'
+import { findRegisteredHook, type RegisteredHook } from './hooks.js'
 
 export class CapabilityError extends Error {}
 
@@ -14,11 +15,27 @@ export interface CapabilityServer {
   env?: Record<string, string>
 }
 
+/**
+ * A PreToolUse hook this capability wants, named by the basename of its command.
+ *
+ * The absolute path is not written here because it is wherever the user installed the
+ * thing; it is looked up in the Claude Code settings the tool already registered itself
+ * in. Naming the event and matcher here rather than adopting them from that file means a
+ * hook cannot be silently rebound to a different tool by an edit the squad never saw.
+ */
+export interface CapabilityHook {
+  event: string
+  matcher?: string
+  command: string
+}
+
 export interface Capability {
   name: string
   description: string
   /** MCP servers this capability brings, keyed by server name. */
   mcpServers: Record<string, CapabilityServer>
+  /** Tool-call hooks this capability wants, resolved against installed hooks. */
+  hooks: CapabilityHook[]
   /** Tool patterns to pre-approve, e.g. `mcp__playwright__*` or `WebSearch`. */
   allowedTools: string[]
   /** Human-readable note shown in the picker, e.g. what credentials are needed. */
@@ -59,6 +76,31 @@ function parseServers(raw: unknown, file: string): Record<string, CapabilityServ
   return out
 }
 
+function parseHooks(raw: unknown, file: string): CapabilityHook[] {
+  if (raw === undefined || raw === null) return []
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new CapabilityError(`${file}: "hooks" must be a mapping of event name to a list of hooks`)
+  }
+  const out: CapabilityHook[] = []
+  for (const [event, entries] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) {
+      throw new CapabilityError(`${file}: hooks.${event} must be a list`)
+    }
+    for (const entry of entries) {
+      const hook = entry as Record<string, unknown>
+      if (!hook || typeof hook.command !== 'string' || !hook.command.trim()) {
+        throw new CapabilityError(`${file}: every hook under hooks.${event} needs a "command"`)
+      }
+      out.push({
+        event,
+        matcher: typeof hook.matcher === 'string' && hook.matcher.trim() ? hook.matcher : undefined,
+        command: hook.command,
+      })
+    }
+  }
+  return out
+}
+
 export function parseCapability(file: string, raw: string, source: Capability['source']): Capability {
   const { data, content } = matter(raw)
   const name = typeof data.name === 'string' ? data.name : path.basename(file, '.md')
@@ -77,6 +119,7 @@ export function parseCapability(file: string, raw: string, source: Capability['s
     name,
     description: typeof data.description === 'string' ? data.description : 'Capability',
     mcpServers: parseServers(data.mcpServers, file),
+    hooks: parseHooks(data.hooks, file),
     allowedTools: ((data.allowedTools as string[] | undefined) ?? []).map(String),
     requires: typeof data.requires === 'string' ? data.requires : undefined,
     instructions,
@@ -141,6 +184,57 @@ export async function materializeServers(
   }
 
   return { servers, secrets, warnings }
+}
+
+/**
+ * Resolve a capability's declared hooks against what is actually installed.
+ *
+ * A hook that is not installed is skipped with a warning rather than failing the agent:
+ * the capability's skill still teaches the technique, and the operator gets told the hard
+ * block is not in force - which matters, because the whole value of a hook like this is
+ * that it is a block and not a suggestion.
+ *
+ * The warning names the capability rather than the agent, and covers every missing hook at
+ * once, so that a squad whose four default profiles all want `context` says the thing once
+ * instead of eight times.
+ */
+export function resolveHooks(
+  capability: Capability,
+  registered: RegisteredHook[],
+): { hooks: ResolvedHook[]; warnings: string[] } {
+  const hooks: ResolvedHook[] = []
+  const missing: string[] = []
+
+  for (const wanted of capability.hooks) {
+    const found = findRegisteredHook(wanted.command, registered)
+    if (!found) {
+      missing.push(path.basename(wanted.command))
+      continue
+    }
+    hooks.push({
+      event: wanted.event,
+      matcher: wanted.matcher,
+      command: found.command,
+      args: found.args,
+      timeout: found.timeout,
+    })
+  }
+
+  const warnings = missing.length
+    ? [
+        `the "${capability.name}" capability wants ${missing.map(m => `"${m}"`).join(' and ')}, which ${missing.length > 1 ? 'are' : 'is'} not installed, so its hooks are not in force.${capability.requires ? ` ${capability.requires.trim().split('\n')[0]}` : ''}`,
+      ]
+    : []
+  return { hooks, warnings }
+}
+
+/** A capability hook matched to an installed command. */
+export interface ResolvedHook {
+  event: string
+  matcher?: string
+  command: string
+  args: string[]
+  timeout?: number
 }
 
 /** Skill name as the SDK sees it once the capability plugin is loaded. */

@@ -11,6 +11,8 @@ import { summarizeToolUse } from './toolsummary.js'
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { redact } from './secrets.js'
 import { usageLimit } from './usage.js'
+import { buildHookMatchers } from './hooks.js'
+import type { ResolvedHook } from './capability.js'
 
 export interface RunnerDeps {
   profile: AgentProfile
@@ -31,6 +33,8 @@ export interface RunnerDeps {
   capabilityTools?: string[]
   /** Capability skill names (`squad:browser`), used as this agent's skill allowlist. */
   capabilitySkills?: string[]
+  /** Tool-call hooks contributed by this agent's capabilities, already resolved to paths. */
+  capabilityHooks?: ResolvedHook[]
   /** Path to the generated capability plugin. */
   pluginPath?: string
   /** Resolved secret values, so they can be scrubbed from anything user-visible. */
@@ -105,6 +109,9 @@ export class AgentRunner extends EventEmitter {
     this.ourServerNames = new Set(Object.keys(capabilityServers))
     const capabilityTools = this.deps.capabilityTools ?? []
     const capabilitySkills = this.deps.capabilitySkills ?? []
+    const capabilityHooks = buildHookMatchers(this.deps.capabilityHooks ?? [], message =>
+      this.emitEntry({ kind: 'notice', text: message }),
+    )
 
     const options: Options = {
       cwd: workdir,
@@ -135,6 +142,9 @@ export class AgentRunner extends EventEmitter {
             plugins: this.deps.pluginPath ? [{ type: 'local' as const, path: this.deps.pluginPath }] : undefined,
           }
         : {}),
+      // Hooks are passed programmatically because the SDK loads no settings files of its
+      // own here - see hooks.ts for why the user layer stays out.
+      ...(Object.keys(capabilityHooks).length > 0 ? { hooks: capabilityHooks } : {}),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       maxBudgetUsd: profile.budgetUsd ?? config.defaultBudgetUsd,

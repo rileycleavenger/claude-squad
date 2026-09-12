@@ -188,6 +188,7 @@ Shipped with claude-squad:
 | `chrome-devtools` | Debug a running web app: console, network, performance traces |
 | `github` | Open PRs, manage issues, read CI through `gh` |
 | `notify` | Reach you out-of-band when nobody is watching the TUI |
+| `context` | Keep big files out of the context window — large reads get delegated |
 
 Drop a file in `<repo>/.squad/capabilities/` to add your own, or to override a built-in of
 the same name without forking it.
@@ -197,6 +198,40 @@ the same name without forking it.
 Per agent, opt-in — in the profile (`capabilities: [browser, research]`) or from the `+`
 tab with `^E`. Scoping matters: an agent that carries every tool chooses worse than one
 carrying three, and credentials stay confined to the agents that need them.
+
+### Keeping contexts small
+
+Four agents fill four context windows in parallel, and a context that fills up is an agent
+that gets worse at the task and more expensive at the same time. The `context` capability
+addresses that by letting a tool-call hook *block* a read that would dump a large file into
+the window, and pointing the agent at a cheap worker model instead:
+
+```
+Read handlers.ts  ✕  File is 900 lines (threshold: 350)
+⚙ bulk-read --question "what is RETRY_BUDGET set to?" --paths handlers.ts
+```
+
+The agent asks a question and gets an answer back, rather than paying for 900 lines to find
+one of them. Targeted reads (`offset`/`limit`) and `grep` are never blocked, so the escape
+hatch is always a cheaper read rather than a fight with the hook.
+
+This capability is the one that brings **hooks** rather than tools — it changes what an
+agent may do, not what it can do. That means it needs something installed outside the
+squad. It asks for two PreToolUse hooks by name, `check-file-size` (on `Read`) and
+`check-bash-read` (on `Bash`), registered in `~/.claude/settings.json`, plus `bulk-read`
+and `code-write` on your `PATH`. That is the shape Spotify's
+[shunt](https://github.com/spotify/portal-ai-plugins) plugin installs; the plugin itself
+reaches a Spotify-internal worker model, so outside Spotify you want a local port of it
+that shells out to a cheap model of your own.
+
+Squad looks those commands up by name in your settings and calls them itself, because the
+agent SDK loads no user settings of its own — hooks that work in the `claude` CLI do not
+reach squad agents unless a capability carries them across.
+
+If they aren't installed, the squad says so once at boot and runs without the block; the
+skill still teaches the technique. The four scaffolded profiles all include `context`, so
+this is on by default when you have the hooks and inert when you don't. `npm run context`
+is an end-to-end check that a large read really is being denied.
 
 ### Every agent gets its own browser
 
@@ -336,6 +371,7 @@ npm run smoke         # one real agent: proves session continuity and worktree w
 npm run integration   # two real agents: groupchat, @mention handoff, worktree isolation
 npm run capabilities  # one real agent driving a real browser through the browser capability
 npm run reconfig      # edits a live agent and proves the new instructions take effect
+npm run context       # proves a large read is really denied, and the agent works around it
 ```
 
 `smoke` and `integration` call the API. They default to `claude-haiku-4-5` since they
