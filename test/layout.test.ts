@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeLayout, terminalSize } from '../src/ui/layout.js'
+import { computeLayout, terminalSize, noticeHeight, MAX_NOTICE_ROWS } from '../src/ui/layout.js'
 
 const base = { rows: 24, tabBarHeight: 1, noticeLines: 0, showingForm: false }
 
@@ -104,4 +104,28 @@ test('every fallback size still produces a drawable layout', () => {
     assert.ok(layout.totalHeight >= 1 && layout.totalHeight <= rows)
     assert.ok(layout.paneHeight >= 1)
   }
+})
+
+test('a notice is measured by the rows it wraps onto, not its newlines', () => {
+  // The startup warnings are one long sentence with no newline in them. Counting `\n`s
+  // reserved a single row for a box that drew six, and the overflow rode over the
+  // composer with nothing able to scroll it away.
+  const long = 'the "email" capability has no command for its "email" server, so its tools are unavailable. Set SQUAD_EMAIL_MCP_COMMAND to the command that starts it.'
+  assert.ok(noticeHeight(long, 60) > 3, 'a wrapped warning needs more than one text row')
+  assert.equal(noticeHeight(undefined, 60), 0)
+  // Borders and the dismiss hint are included, and the text itself is capped.
+  assert.equal(noticeHeight('short', 60), 4)
+  assert.equal(noticeHeight(long, 24), MAX_NOTICE_ROWS + 3)
+})
+
+test('the composer gets the rows it asks for, up to a third of the screen', () => {
+  assert.equal(computeLayout({ rows: 40, tabBarHeight: 1, inputRows: 5 }).inputRows, 5)
+  assert.equal(computeLayout({ rows: 40, tabBarHeight: 1 }).inputRows, 1, 'one row by default')
+  // A draft long enough to fill the screen must not push the transcript out entirely.
+  const crowded = computeLayout({ rows: 24, tabBarHeight: 1, inputRows: 50 })
+  assert.ok(crowded.inputRows <= 8)
+  assert.ok(crowded.paneHeight >= 1)
+  assert.ok(crowded.totalHeight <= 24)
+  // The form has its own input, so the composer is not drawn at all.
+  assert.equal(computeLayout({ rows: 40, tabBarHeight: 1, inputRows: 5, showingForm: true }).inputRows, 0)
 })

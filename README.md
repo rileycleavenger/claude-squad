@@ -63,13 +63,22 @@ key instead.
 
 | Key | |
 | --- | --- |
-| `←` `→` | switch tabs (`Tab` / `Shift+Tab` also work) |
-| `↑` `↓` | input history; moves the selection in the `+` tab |
+| `Tab` `Shift+Tab` | switch tabs |
+| `←` `→` | move the cursor; switch tabs when the box is empty |
+| `↑` `↓` | move a line; input history when the box is one line; selection in the `+` tab |
+| `⌥←` `⌥→` | move a word |
+| `^A` `^E` | start / end of the line |
+| `^D` | delete forward |
 | `Enter` | send |
+| `\` then `Enter` | newline (`⌥Enter` too, in terminals that send it) |
+| `Esc` | dismiss the notice above the composer |
 | click a tab | switch to it |
-| `^E` | edit the current agent's configuration |
+| `^E` (empty box) | edit the current agent's configuration |
 | `^K` | interrupt the current tab's agent |
 | `^C` | shut the squad down |
+
+The input box wraps and grows as you type, up to a third of the screen, and scrolls to
+follow the cursor past that.
 
 Typing in `#groupchat` addresses the whole team. Typing in an agent's tab is a private
 message to just that agent. Each tab keeps its own unsent draft.
@@ -377,6 +386,17 @@ That is what makes parallel work possible, and it is a real risk. The guardrails
 
 Point it at a scratch repo first. Four concurrent Opus agents spend quickly — the footer
 shows the running total, and lighter roles do fine on `claude-sonnet-5`.
+
+### Running out of usage
+
+When the account hits a claude.ai usage limit, every agent is cut off mid-task. Squad
+reads the reset time off the SDK's rate-limit event, posts it to `#groupchat`, and when it
+comes round tells each stalled agent to continue what it was doing — so an overnight run
+picks itself back up instead of waiting for you to retype `continue` four times.
+
+A reset more than 24 hours out is not waited for: you are told the time and can restart
+when it suits. This is separate from `budgetUsd`, which is a deliberate cap — an agent
+that exhausts its budget stays stopped.
 
 ## Development
 

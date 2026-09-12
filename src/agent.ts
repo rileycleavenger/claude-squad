@@ -10,9 +10,16 @@ import type { AgentProfile, AgentStatus, Entry, SquadConfig } from './types.js'
 import { summarizeToolUse } from './toolsummary.js'
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { redact } from './secrets.js'
-import { usageLimit } from './usage.js'
+import { usageLimit, resetAt } from './usage.js'
 import { buildHookMatchers } from './hooks.js'
 import type { ResolvedHook } from './capability.js'
+
+/** The limit type as a human would name it. */
+function describeLimitType(type: string | undefined): string {
+  if (!type) return 'account'
+  if (type === 'overage') return 'overage'
+  return type.replace(/_/g, '-').replace('seven-day', 'weekly').replace('five-hour', '5-hour')
+}
 
 export interface RunnerDeps {
   profile: AgentProfile
@@ -68,6 +75,8 @@ export class AgentRunner extends EventEmitter {
   private readonly priorCostUsd: number
   private turns = 0
   private ready = false
+  /** Set when the account ran out of quota mid-turn; cleared when it is put back to work. */
+  private stalled = false
   private sessionId: string | undefined
   private ourServerNames = new Set<string>()
   private primer: string | undefined
@@ -249,8 +258,10 @@ export class AgentRunner extends EventEmitter {
             // healthy - the squad stops working and nothing on screen explains it.
             const limit = usageLimit(block.text)
             if (limit) {
-              this.emitEntry({ kind: 'error', text: limit })
-              this.setStatus({ kind: 'error', message: 'usage limit' })
+              // No structured event came with this one, so the reset time has to be read
+              // out of the sentence - and often cannot be, which is fine: the squad then
+              // says so rather than guessing a time to wake up at.
+              this.stall(limit, resetAt(limit))
               continue
             }
             this.emitEntry({ kind: 'chat', text: block.text.trim() })
@@ -292,9 +303,49 @@ export class AgentRunner extends EventEmitter {
         return
       }
 
+      case 'rate_limit_event': {
+        // The only place the reset time arrives exactly. Everything else about running
+        // out of quota is prose; `resetsAt` is a number, so the squad can wait on it
+        // instead of asking the operator to come back and retype `continue`.
+        const info = message.rate_limit_info
+        if (info.status !== 'rejected' && info.overageStatus !== 'rejected') return
+        const resetsAt = info.resetsAt ?? info.overageResetsAt
+        this.stall(
+          `Out of ${describeLimitType(info.rateLimitType)} usage.`,
+          resetsAt === undefined ? undefined : resetsAt * 1000,
+        )
+        return
+      }
+
       default:
         return
     }
+  }
+
+  /**
+   * Record that this agent is out of quota.
+   *
+   * The status goes to `error` rather than `idle` because the agent has not finished - it
+   * was cut off mid-task, and showing it as idle is how a stalled squad used to look
+   * perfectly healthy while doing nothing.
+   */
+  private stall(text: string, resetsAt?: number): void {
+    this.stalled = true
+    this.emitEntry({ kind: 'error', text })
+    this.setStatus({ kind: 'error', message: 'usage limit' })
+    this.emit('usage-limit', { resetsAt })
+  }
+
+  /** Whether this agent is parked waiting for quota rather than waiting for work. */
+  isStalled(): boolean {
+    return this.stalled
+  }
+
+  /** Clear the stall and put the agent back to work on what it was doing. */
+  resume(prompt: string): void {
+    if (!this.stalled) return
+    this.stalled = false
+    this.send(prompt)
   }
 
   /**

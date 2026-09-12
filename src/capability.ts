@@ -162,8 +162,11 @@ export async function materializeServers(
       // An unresolved {{env:...}} command means the capability was never configured.
       // Skip the server rather than starting a broken one: the agent still gets the
       // technique from the skill, and the operator gets told what to set.
+      // Named by capability, not by agent: every profile in a squad tends to want the
+      // same one, and four copies of the same sentence is what turned the notice box
+      // into a wall of text with the real message buried in it.
       warnings.push(
-        `@${ctx.agentName}: the "${capability.name}" capability has no command for its "${name}" server, so its tools are unavailable.${capability.requires ? ` ${capability.requires.trim().split('\n')[0]}` : ''}`,
+        `the "${capability.name}" capability has no command for its "${name}" server, so its tools are unavailable.${capability.requires ? ` ${capability.requires.trim().split('\n')[0]}` : ''}`,
       )
       continue
     }

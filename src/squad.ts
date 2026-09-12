@@ -21,6 +21,7 @@ import { loadUserHooks, type RegisteredHook } from './hooks.js'
 import { writeCapabilityPlugin, pluginPath } from './plugin.js'
 import type { AgentProfile, AgentStatus, Entry, SquadConfig, SquadMessage } from './types.js'
 import { HUMAN, TEAM } from './types.js'
+import { CONTINUE_PROMPT, planResume } from './usage.js'
 
 /** A tab in the UI: the groupchat, one agent's thread, or the new-agent pane. */
 export interface Tab {
@@ -48,6 +49,17 @@ export class Squad extends EventEmitter {
   readonly workspaces: Map<string, Workspace>
   readonly warnings: string[] = []
 
+  /**
+   * Record a startup warning, once.
+   *
+   * Every profile in a squad tends to want the same capabilities, so the same complaint
+   * arrives four times; the notice box showed all four concatenated, with the useful
+   * sentence buried a screen into the repetition.
+   */
+  private warn(text: string): void {
+    if (!this.warnings.includes(text)) this.warnings.push(text)
+  }
+
   private readonly bus: MessageBus
   private readonly runners = new Map<string, AgentRunner>()
   private readonly transcripts = new Map<string, Entry[]>()
@@ -59,6 +71,9 @@ export class Squad extends EventEmitter {
   /** Catch-up text queued for an agent whose session had to be restarted. */
   private readonly primers = new Map<string, string>()
   private saveTimer: NodeJS.Timeout | undefined
+  /** When quota is expected back, while any agent is stalled waiting for it. */
+  private resumeAt: number | undefined
+  private resumeTimer: NodeJS.Timeout | undefined
   private worktreesEnabled: boolean
   private started = false
 
@@ -92,7 +107,7 @@ export class Squad extends EventEmitter {
     }
 
     bus.on('message', (message: SquadMessage) => this.onBusMessage(message))
-    bus.on('warning', (text: string) => this.warnings.push(text))
+    bus.on('warning', (text: string) => this.warn(text))
     bus.on('suppressed', ({ agent, reason }: { agent: string; reason: string }) => {
       const text =
         reason === 'rate-limit'
@@ -124,7 +139,7 @@ export class Squad extends EventEmitter {
       config.useWorktrees && [...workspaces.values()].every(w => w.branch !== undefined) && !warning
 
     const squad = new Squad(config, bus, workspaces, state, restored, worktreesEnabled, capabilities)
-    if (warning) squad.warnings.push(warning)
+    if (warning) squad.warn(warning)
     return squad
   }
 
@@ -406,6 +421,7 @@ export class Squad extends EventEmitter {
 
   async shutdown(): Promise<void> {
     if (this.saveTimer) clearTimeout(this.saveTimer)
+    if (this.resumeTimer) clearTimeout(this.resumeTimer)
     await Promise.all([...this.runners.values()].map(r => r.stop()))
     this.captureState()
     await saveState(this.config.squadDir, this.state)
@@ -439,7 +455,7 @@ export class Squad extends EventEmitter {
     for (const name of profile.capabilities) {
       const capability = this.capabilities.get(name)
       if (!capability) {
-        this.warnings.push(
+        this.warn(
           `@${profile.name} asks for the "${name}" capability, which does not exist. Known: ${[...this.capabilities.keys()].join(', ')}.`,
         )
         continue
@@ -449,10 +465,7 @@ export class Squad extends EventEmitter {
       tools.push(...capability.allowedTools)
       const resolved = resolveHooks(capability, registered)
       hooks.push(...resolved.hooks)
-      // Every profile can want the same capability, so say it once for the squad.
-      for (const warning of resolved.warnings) {
-        if (!this.warnings.includes(warning)) this.warnings.push(warning)
-      }
+      for (const warning of resolved.warnings) this.warn(warning)
       try {
         const result = await materializeServers(capability, {
           agentName: profile.name,
@@ -462,10 +475,10 @@ export class Squad extends EventEmitter {
         })
         Object.assign(servers, result.servers)
         secrets.push(...result.secrets)
-        this.warnings.push(...result.warnings)
+        for (const warning of result.warnings) this.warn(warning)
       } catch (err) {
         // A missing credential disables one capability; it must not stop the squad.
-        this.warnings.push(`@${profile.name}: "${name}" could not start - ${(err as Error).message}`)
+        this.warn(`@${profile.name}: "${name}" could not start - ${(err as Error).message}`)
       }
     }
 
@@ -503,6 +516,7 @@ export class Squad extends EventEmitter {
       this.emit('update')
     })
     runner.on('session', () => this.scheduleSave())
+    runner.on('usage-limit', ({ resetsAt }: { resetsAt?: number }) => this.onUsageLimit(resetsAt))
     this.runners.set(profile.name, runner)
     this.bus.register({ name: profile.name, deliver: text => runner.send(text) })
     return runner
@@ -518,6 +532,48 @@ export class Squad extends EventEmitter {
       text: message.text,
       mentions: message.mentions,
     })
+  }
+
+  /**
+   * An agent ran out of quota.
+   *
+   * Running out is a squad-wide event even though it arrives per agent: the whole squad
+   * shares one account, so the rest are about to hit it too. Rather than leave four
+   * stalled agents for the operator to restart by hand, the reset time is noted once and
+   * everyone waiting is put back to work when it comes round.
+   */
+  private onUsageLimit(resetsAt?: number): void {
+    const plan = planResume(resetsAt, { scheduledAt: this.resumeAt })
+    if (plan.action === 'already-scheduled') return
+
+    // Say something either way: a stalled squad looks exactly like a quiet one, and the
+    // operator needs to know whether waiting will do anything.
+    this.append(GROUP_TAB, { id: randomUUID(), ts: Date.now(), kind: 'notice', agent: 'squad', text: plan.text })
+    if (plan.action !== 'wait') return
+
+    this.resumeAt = plan.at
+    if (this.resumeTimer) clearTimeout(this.resumeTimer)
+    // A minute of grace: waking on the exact second the limit lifts is how you get a
+    // second rejection and a squad that has to be resumed by hand after all. The wait is
+    // already capped at a day, so it always fits in one timer.
+    this.resumeTimer = setTimeout(() => this.resumeStalled(), Math.max(0, plan.at - Date.now()) + 60_000)
+  }
+
+  /** Put every agent that is parked on quota back on the task it was cut off mid-way. */
+  private resumeStalled(): void {
+    this.resumeTimer = undefined
+    this.resumeAt = undefined
+    const resumed = [...this.runners.values()].filter(r => r.isStalled())
+    if (resumed.length === 0) return
+    for (const runner of resumed) runner.resume(CONTINUE_PROMPT)
+    this.append(GROUP_TAB, {
+      id: randomUUID(),
+      ts: Date.now(),
+      kind: 'notice',
+      agent: 'squad',
+      text: `Usage has reset - ${resumed.map(r => `@${r.name}`).join(', ')} picked back up where they left off.`,
+    })
+    this.emit('update')
   }
 
   private append(tabId: string, entry: Entry): void {
