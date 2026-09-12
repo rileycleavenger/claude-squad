@@ -134,6 +134,19 @@ export class MessageBus extends EventEmitter {
     return message
   }
 
+  /**
+   * Whether `message` is addressed to `name` - the one place that decides who a message
+   * interrupts. Both waking an idle agent and releasing a parked one go through this, so
+   * an unmentioned post cannot interrupt through one path after being held back by the
+   * other.
+   */
+  private addresses(message: SquadMessage, name: string): boolean {
+    if (name === message.from) return false
+    // A DM is visible only to its recipient.
+    if (message.channel.startsWith('dm:') && name !== message.channel.slice(3)) return false
+    return message.mentions.includes(TEAM) || message.mentions.includes(name.toLowerCase())
+  }
+
   private route(message: SquadMessage): void {
     const fromHuman = message.from === HUMAN
     const isDm = message.channel.startsWith('dm:')
@@ -141,11 +154,9 @@ export class MessageBus extends EventEmitter {
 
     for (const [name, sub] of this.subscribers) {
       if (name === message.from) continue
-      // A DM is visible only to its recipient.
       if (isDm && name !== dmTarget) continue
 
-      const addressed = message.mentions.includes(TEAM) || message.mentions.includes(name.toLowerCase())
-      if (!addressed) {
+      if (!this.addresses(message, name)) {
         this.queueUnread(name, message)
         continue
       }
@@ -235,12 +246,16 @@ export class MessageBus extends EventEmitter {
     })
   }
 
+  /**
+   * Wake the agents parked in `wait_for_messages` that this message is addressed to.
+   *
+   * Only addressed agents: waking a parked agent is interrupting it, and an unmentioned
+   * post is explicitly the "inform without interrupting" case. Releasing everyone meant
+   * one @mention put the whole squad back to work.
+   */
   private releaseWaiters(message: SquadMessage): void {
-    const isDm = message.channel.startsWith('dm:')
-    const dmTarget = isDm ? message.channel.slice(3) : undefined
     for (const [name, list] of this.waiters) {
-      if (name === message.from) continue
-      if (isDm && name !== dmTarget) continue
+      if (!this.addresses(message, name)) continue
       for (const resolve of [...list]) resolve()
     }
   }

@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { AgentRunner } from './agent.js'
-import { MessageBus } from './bus.js'
+import { MessageBus, extractMentions } from './bus.js'
 import { loadConfig, writeProfile } from './config.js'
 import { saveToLibrary } from './library.js'
 import { loadState, saveState, TranscriptLog, type SquadState } from './state.js'
@@ -367,9 +367,29 @@ export class Squad extends EventEmitter {
     if (!body) return
 
     if (tabId === GROUP_TAB) {
-      // "Team, start on X" should reach everyone; an unaddressed groupchat post that woke
-      // nobody would just sit there looking broken.
-      this.bus.post({ from: HUMAN, channel: 'group', text: body, mentions: [TEAM] })
+      // Address exactly who was named. Waking the whole squad on every line means four
+      // agents burning four contexts on a question meant for one of them.
+      const named = extractMentions(body)
+      const addressed = named.filter(n => n === TEAM || this.runners.has(n))
+      if (named.length > 0 && addressed.length === 0) {
+        // The operator meant to address someone. Saying nothing would leave them watching
+        // an idle squad, so name the squad and let them retype rather than guessing.
+        this.append(GROUP_TAB, {
+          id: randomUUID(),
+          ts: Date.now(),
+          kind: 'notice',
+          agent: 'squad',
+          text: `No agent named ${named.map(n => '@' + n).join(' or ')}. The squad is ${[...this.runners.keys()].map(n => '@' + n).join(', ')}, or @${TEAM} for everyone. Nobody was woken; the message is waiting in their unread.`,
+        })
+      }
+      // An unaddressed line still reaches everyone: "Team, start on X" should work, and a
+      // post that woke nobody would just sit there looking broken.
+      this.bus.post({
+        from: HUMAN,
+        channel: 'group',
+        text: body,
+        mentions: addressed.length > 0 || named.length > 0 ? addressed : [TEAM],
+      })
       return
     }
     if (!this.runners.has(tabId)) return

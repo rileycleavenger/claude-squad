@@ -80,6 +80,47 @@ test('an agent added in the TUI is loaded normally on the next launch', async ()
   await second.shutdown()
 })
 
+test('a groupchat @mention addresses only who was named', async () => {
+  // Waking the whole squad on every line means four agents burning four contexts on a
+  // question meant for one of them.
+  const squad = await Squad.create(await scratchRepo())
+  await squad.addAgent(profile('engineer'))
+  await squad.addAgent(profile('product'))
+
+  squad.submit(GROUP_TAB, '@product what do you think about watermarking the previews?')
+  // Match the whole line: the join announcement for @product also starts with "@product".
+  const mentionsOf = (text: string) =>
+    (squad.entries(GROUP_TAB).find(e => e.kind === 'chat' && e.text === text) as
+      | { mentions: string[] }
+      | undefined)?.mentions
+  assert.deepEqual(
+    mentionsOf('@product what do you think about watermarking the previews?'),
+    ['product'],
+    'only the named agent is woken',
+  )
+
+  // An unaddressed line is still for everyone: "Team, start on X" has to work.
+  squad.submit(GROUP_TAB, 'ship it when you are ready')
+  assert.deepEqual(mentionsOf('ship it when you are ready'), ['team'])
+
+  // Several handles wake several agents.
+  squad.submit(GROUP_TAB, '@engineer and @product sync on this')
+  assert.deepEqual(mentionsOf('@engineer and @product sync on this')!.sort(), ['engineer', 'product'])
+  await squad.shutdown()
+})
+
+test('a mistyped handle says so instead of silently waking nobody', async () => {
+  const squad = await Squad.create(await scratchRepo())
+  await squad.addAgent(profile('product'))
+  squad.submit(GROUP_TAB, '@prodcut thoughts?')
+
+  const notice = squad.entries(GROUP_TAB).find(e => e.kind === 'notice') as { text: string } | undefined
+  assert.ok(notice, 'the operator meant to address someone and should be told they did not')
+  assert.match(notice!.text, /@prodcut/)
+  assert.match(notice!.text, /@product/, 'names the real squad so they can retype')
+  await squad.shutdown()
+})
+
 test('a duplicate handle is refused', async () => {
   const squad = await Squad.create(await scratchRepo())
   await squad.addAgent(profile('engineer'))

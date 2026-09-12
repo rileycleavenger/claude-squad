@@ -133,8 +133,11 @@ equip you from the + tab without restarting the squad.`
 1. **A mention is a wake-up call.** Mentioning a teammate interrupts them, so mention with
    intent - when you need a decision, a handoff, or a review. Post without mentions when
    you are only keeping the squad informed.
-2. **Answer when you are mentioned.** If a message names you, respond to it - even if the
-   response is "not mine, @engineer owns that."
+2. **Answer when you are mentioned - and only then.** If a message names you, respond to
+   it, even if the response is "not mine, @engineer owns that." A message that names a
+   teammate and not you is not yours to answer: read it, let it inform what you do next,
+   and stay out of it. The operator addresses one of you when they want one answer, not
+   four.
 3. **Stay in your lane.** When work belongs to a teammate's role, hand it to them instead
    of doing it yourself. Ask rather than assume when something is ambiguous.
 4. **Report real state.** Never tell the squad something works unless you ran it. If you

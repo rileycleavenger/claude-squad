@@ -88,6 +88,21 @@ file lists, implementation detail. Left unchecked that buries the coordination y
 actually need to read in a scroll of status updates. Posts are meant to be two or three
 sentences; the detail is a tab away.
 
+### Who a message wakes
+
+**An @mention is the wake-up call.** `@product what do you think?` starts *only* product;
+name several (`@engineer @product`) to start several. A line that mentions nobody goes to
+everyone, so `Team, start on X` still works as you'd expect.
+
+Everyone else sees the message either way — it lands in their unread and they read it at
+their next turn boundary — but it doesn't interrupt them, and an agent parked on
+`wait_for_messages` stays parked. That matters because an agent you woke for nothing is a
+context filled and a bill run up for an answer you didn't ask it for. Agents follow the
+same rule when they post: `mentions` is what interrupts a teammate, and a post without it
+informs without waking anyone.
+
+Mistype a handle and the squad says so rather than quietly waking nobody.
+
 The pane is rendered to match. `**bold**` and `` `code` `` are drawn as bold and as cyan
 rather than printed as literal markers, and when the speaker changes there are three blank
 lines before the new voice, so a handoff between agents is visible at a glance instead of
@@ -372,6 +387,7 @@ npm run integration   # two real agents: groupchat, @mention handoff, worktree i
 npm run capabilities  # one real agent driving a real browser through the browser capability
 npm run reconfig      # edits a live agent and proves the new instructions take effect
 npm run context       # proves a large read is really denied, and the agent works around it
+npm run mentions      # three agents parked; proves an @mention wakes only who it names
 ```
 
 `smoke` and `integration` call the API. They default to `claude-haiku-4-5` since they

@@ -102,16 +102,51 @@ test('a relay chain is cut once it runs too deep', () => {
   assert.ok(suppressed.includes('relay-depth'))
 })
 
-test('takeUnread drains, and wait_for_messages resolves on arrival', async () => {
-  const { bus } = makeBus(['engineer'])
+test('takeUnread drains, and wait_for_messages resolves when the agent is addressed', async () => {
+  const { bus, captured } = makeBus(['engineer'])
   bus.post({ from: HUMAN, channel: 'group', text: 'fyi' })
   assert.equal(bus.takeUnread('engineer').length, 1)
   assert.equal(bus.unreadCount('engineer'), 0)
 
   const waiting = bus.waitForMessage('engineer', 5000)
-  bus.post({ from: 'architect', channel: 'group', text: 'design is up' })
+  bus.post({ from: 'architect', channel: 'group', text: '@engineer design is up', mentions: ['engineer'] })
   await waiting // resolves rather than timing out
+  // An addressed message goes straight to the agent rather than waiting as unread.
+  assert.deepEqual(captured.get('engineer')!.received.length, 1)
+  bus.close()
+})
+
+test('an unaddressed post leaves a parked agent parked', async () => {
+  // Waking an agent out of wait_for_messages is interrupting it, and an unmentioned post
+  // is the "inform without interrupting" case. Releasing every waiter meant one @mention
+  // put the whole squad back to work at once.
+  const { bus } = makeBus(['engineer', 'architect'])
+  let released = false
+  const waiting = bus.waitForMessage('engineer', 200).then(() => {
+    released = true
+  })
+
+  bus.post({ from: HUMAN, channel: 'group', text: '@architect what do you think?' })
+  await new Promise(r => setTimeout(r, 60))
+  assert.equal(released, false, 'a post addressed to a teammate must not wake this one')
+
+  await waiting
+  assert.equal(released, true, 'it still comes back on its own timeout')
+  // The message is not lost - it is waiting to be read at the next turn boundary.
   assert.equal(bus.unreadCount('engineer'), 1)
+  bus.close()
+})
+
+test('a DM releases only its recipient', async () => {
+  const { bus } = makeBus(['engineer', 'architect'])
+  let engineerWoke = false
+  const waiting = bus.waitForMessage('engineer', 200).then(() => {
+    engineerWoke = true
+  })
+  bus.post({ from: 'architect', channel: 'dm:engineer', text: 'just you' })
+  await new Promise(r => setTimeout(r, 20))
+  assert.equal(engineerWoke, true)
+  await waiting
   bus.close()
 })
 

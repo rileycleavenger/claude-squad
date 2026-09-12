@@ -7,3 +7,4 @@ dist/
 .squad/transcript.jsonl
 .squad/data/
 .squad/.plugin/
+.claude/worktrees/
